@@ -18,4 +18,6 @@ pub enum Error {
     InvalidProtocol,
     #[error("invalid protocol level {0}")]
     InvalidProtocolLevel(u8),
+    #[error("invalid Connection Ack {0}")]
+    InvalidConnAckCode(u8),
 }

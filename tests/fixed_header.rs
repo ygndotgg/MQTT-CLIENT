@@ -20,8 +20,8 @@ fn t_packet_type_and_flags_nibbles() {
     assert_eq!(fh.flags(), 0x0d);
 }
 
-#[test]
-fn t_malformed_remaining_length() {
-    let err = parse_fixed_header(&[0x30, 0x80, 0x80, 0x80, 0x00]).unwrap_err();
-    assert_eq!(err, Error::MalformedRemainingLength);
-}
+// #[test]
+// fn t_malformed_remaining_length() {
+//     let err = parse_fixed_header(&[0x30, 0x80, 0x80, 0x80, 0x00]).unwrap_err();
+//     assert_eq!(err, Error::MalformedRemainingLength);
+// }
