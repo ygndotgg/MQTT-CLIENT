@@ -5,7 +5,8 @@ use crate::{
     },
     protocol::v4::error::Error,
     types::{
-        ConnAck, Connect, LastWill, Packet, Publish, Qos, SubAck, Subscribe, UnsubAck, Unsubscribe,
+        ConnAck, Connect, Filter, LastWill, Packet, PacketType, Publish, Qos, SubAck, Subscribe,
+        UnsubAck, Unsubscribe,
     },
 };
 
@@ -25,8 +26,6 @@ pub fn encode_packet(packet: &Packet, out: &mut Vec<u8>) -> Result<(), Error> {
         Packet::PingReq => encode_ping(12, out),
         Packet::PingResp => encode_ping(13, out),
         Packet::Disconnect => encode_disconnect(out),
-
-        _ => unimplemented!(),
     }
 }
 
@@ -141,40 +140,38 @@ pub fn decode_packet(input: &[u8]) -> Result<Packet, Error> {
     }
     let body = &input[fh.header_len..fh.frame_len()];
     let flag = fh.flags();
-    // assert!(input.len() >= fh.frame_len());
-    // let body = input[fh.frame_len()..];
-    match fh.packet_type() {
-        1 => {
+    let packet_type = PacketType::try_from(fh.packet_type())?;
+    match packet_type {
+        PacketType::Connect => {
             if flag != 0 {
                 return Err(Error::InvalidFixedHeaderFlags {
-                    packet_type: 1,
+                    packet_type: u8::from(PacketType::Connect),
                     flags: flag,
                 });
             }
             Ok(Packet::Connect(decode_connect(body)?))
         }
-        2 => {
+        PacketType::ConnAck => {
             if flag != 0 {
                 return Err(Error::InvalidFixedHeaderFlags {
-                    packet_type: 2,
+                    packet_type: u8::from(PacketType::ConnAck),
                     flags: flag,
                 });
             }
             Ok(Packet::ConnAck(decode_connack(body)?))
         }
-        3 => decode_publish(flag, body),
-        4 => decode_puback_like(4, flag, body),
-        5 => decode_puback_like(5, flag, body),
-        6 => decode_puback_like(6, flag, body),
-        7 => decode_puback_like(7, flag, body),
-        8 => decode_subscribe(flag, body),
-        9 => decode_suback(flag, body),
-        10 => decode_unsubscribe(flag, body),
-        11 => decode_unsuback(flag, body),
-        12 => decode_ping(12, flag, body),
-        13 => decode_ping(13, flag, body),
-        14 => decode_disconnect(flag, body),
-        t => Err(Error::InvalidPacketType(t)),
+        PacketType::Publish => decode_publish(flag, body),
+        PacketType::PubAck => decode_puback_like(4, flag, body),
+        PacketType::PubRec => decode_puback_like(5, flag, body),
+        PacketType::PubRel => decode_puback_like(6, flag, body),
+        PacketType::PubComp => decode_puback_like(7, flag, body),
+        PacketType::Subscribe => decode_subscribe(flag, body),
+        PacketType::SubAck => decode_suback(flag, body),
+        PacketType::Unsubscribe => decode_unsubscribe(flag, body),
+        PacketType::UnsubAck => decode_unsuback(flag, body),
+        PacketType::PingReq => decode_ping(12, flag, body),
+        PacketType::PingResp => decode_ping(13, flag, body),
+        PacketType::Disconnect => decode_disconnect(flag, body),
     }
 }
 
@@ -367,13 +364,13 @@ fn encode_subscribe(p: &Subscribe, out: &mut Vec<u8>) -> Result<(), Error> {
 
     let mut body = Vec::new();
     write_u16(&mut body, p.pkid);
-    for i in &p.filters {
-        let k: u8 = i.1.into();
+    for filter in &p.filters {
+        let k: u8 = filter.qos.into();
         if k > 2 {
             return Err(Error::InvalidQos(k));
         }
 
-        write_mqtt_string(&mut body, &i.0);
+        write_mqtt_string(&mut body, &filter.path);
         body.push(k);
     }
     out.push(0x82);
@@ -445,7 +442,7 @@ fn decode_subscribe(f: u8, body: &[u8]) -> Result<Packet, Error> {
         let topic = read_mqtt_string(&mut curr)?;
         let q = read_u8(&mut curr)?;
         let qos = Qos::try_from(q)?;
-        filters.push((topic, qos));
+        filters.push(Filter { path: topic, qos });
     }
     if filters.is_empty() {
         return Err(Error::MalformedPacket);
