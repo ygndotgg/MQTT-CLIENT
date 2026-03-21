@@ -22,9 +22,18 @@ pub fn encode_packet(packet: &Packet, out: &mut Vec<u8>) -> Result<(), Error> {
         Packet::SubAck(p) => encode_suback(p, out),
         Packet::UnSubscribe(p) => encode_unsubscribe(p, out),
         Packet::UnsubAck(p) => encode_unsuback(p, out),
+        Packet::PingReq => encode_ping(12, out),
+        Packet::PingResp => encode_ping(13, out),
+        Packet::Disconnect => encode_disconnect(out),
 
         _ => unimplemented!(),
     }
+}
+
+fn encode_disconnect(out: &mut Vec<u8>) -> Result<(), Error> {
+    out.push(0xE0); // type 14 + flags 0
+    out.push(0x00);
+    Ok(())
 }
 
 fn encode_connack(p: &ConnAck, out: &mut Vec<u8>) -> Result<(), Error> {
@@ -162,6 +171,9 @@ pub fn decode_packet(input: &[u8]) -> Result<Packet, Error> {
         9 => decode_suback(flag, body),
         10 => decode_unsubscribe(flag, body),
         11 => decode_unsuback(flag, body),
+        12 => decode_ping(12, flag, body),
+        13 => decode_ping(13, flag, body),
+        14 => decode_disconnect(flag, body),
         t => Err(Error::InvalidPacketType(t)),
     }
 }
@@ -502,4 +514,37 @@ fn decode_unsuback(f: u8, body: &[u8]) -> Result<Packet, Error> {
 
 fn valid_suback_code(c: u8) -> bool {
     matches!(c, 0x00 | 0x01 | 0x02 | 0x80)
+}
+
+fn encode_ping(packet_type: u8, out: &mut Vec<u8>) -> Result<(), Error> {
+    out.push(packet_type << 4);
+    out.push(0x00);
+    Ok(())
+}
+
+fn decode_ping(packet_type: u8, flags: u8, body: &[u8]) -> Result<Packet, Error> {
+    if flags != 0 {
+        return Err(Error::InvalidFixedHeaderFlags { packet_type, flags });
+    }
+    if !body.is_empty() {
+        return Err(Error::MalformedPacket);
+    }
+    Ok(match packet_type {
+        12 => Packet::PingReq,
+        13 => Packet::PingResp,
+        _ => return Err(Error::InvalidPacketType(packet_type)),
+    })
+}
+
+fn decode_disconnect(f: u8, body: &[u8]) -> Result<Packet, Error> {
+    if f != 0 {
+        return Err(Error::InvalidFixedHeaderFlags {
+            packet_type: 14,
+            flags: f,
+        });
+    }
+    if !body.is_empty() {
+        return Err(Error::MalformedPacket);
+    }
+    Ok(Packet::Disconnect)
 }
