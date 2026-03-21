@@ -103,12 +103,9 @@ pub struct PubComp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Topic(String, Qos);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subscribe {
     pub pkid: u16,
-    pub filters: Vec<Topic>,
+    pub filters: Vec<(String, Qos)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

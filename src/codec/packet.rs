@@ -4,7 +4,9 @@ use crate::{
         read_u16, write_mqtt_bytes, write_mqtt_string, write_u16,
     },
     protocol::v4::error::Error,
-    types::{ConnAck, Connect, LastWill, Packet, Publish, Qos},
+    types::{
+        ConnAck, Connect, LastWill, Packet, Publish, Qos, SubAck, Subscribe, UnsubAck, Unsubscribe,
+    },
 };
 
 pub fn encode_packet(packet: &Packet, out: &mut Vec<u8>) -> Result<(), Error> {
@@ -16,6 +18,11 @@ pub fn encode_packet(packet: &Packet, out: &mut Vec<u8>) -> Result<(), Error> {
         Packet::PubRec(p) => encode_pkid_only(5, p.pkid, 0, out),
         Packet::PubRel(p) => encode_pkid_only(6, p.pkid, 0x02, out),
         Packet::PubComp(p) => encode_pkid_only(7, p.pkid, 0, out),
+        Packet::Subscribe(p) => encode_subscribe(p, out),
+        Packet::SubAck(p) => encode_suback(p, out),
+        Packet::UnSubscribe(p) => encode_unsubscribe(p, out),
+        Packet::UnsubAck(p) => encode_unsuback(p, out),
+
         _ => unimplemented!(),
     }
 }
@@ -151,6 +158,10 @@ pub fn decode_packet(input: &[u8]) -> Result<Packet, Error> {
         5 => decode_puback_like(5, flag, body),
         6 => decode_puback_like(6, flag, body),
         7 => decode_puback_like(7, flag, body),
+        8 => decode_subscribe(flag, body),
+        9 => decode_suback(flag, body),
+        10 => decode_unsubscribe(flag, body),
+        11 => decode_unsuback(flag, body),
         t => Err(Error::InvalidPacketType(t)),
     }
 }
@@ -332,4 +343,163 @@ fn decode_puback_like(packet_type: u8, flags: u8, body: &[u8]) -> Result<Packet,
         7 => Packet::PubComp(crate::types::PubComp { pkid }),
         _ => return Err(Error::InvalidPacketType(packet_type)),
     })
+}
+
+fn encode_subscribe(p: &Subscribe, out: &mut Vec<u8>) -> Result<(), Error> {
+    if p.pkid == 0 {
+        return Err(Error::PacketIdZero);
+    }
+    if p.filters.is_empty() {
+        return Err(Error::MalformedPacket);
+    }
+
+    let mut body = Vec::new();
+    write_u16(&mut body, p.pkid);
+    for i in &p.filters {
+        let k: u8 = i.1.into();
+        if k > 2 {
+            return Err(Error::InvalidQos(k));
+        }
+
+        write_mqtt_string(&mut body, &i.0);
+        body.push(k);
+    }
+    out.push(0x82);
+    out.extend_from_slice(&encode_remaining_length(body.len())?);
+    out.extend_from_slice(&body);
+    Ok(())
+}
+
+fn encode_suback(p: &SubAck, out: &mut Vec<u8>) -> Result<(), Error> {
+    if p.pkid == 0 {
+        return Err(Error::PacketIdZero);
+    }
+    if p.return_codes.is_empty() {
+        return Err(Error::MalformedPacket);
+    }
+    if !p.return_codes.iter().copied().all(valid_suback_code) {
+        return Err(Error::MalformedPacket);
+    }
+    let mut body = Vec::new();
+    write_u16(&mut body, p.pkid);
+    body.extend_from_slice(&p.return_codes);
+    out.push(0x90);
+    out.extend_from_slice(&encode_remaining_length(body.len())?);
+    out.extend_from_slice(&body);
+    Ok(())
+}
+
+fn encode_unsubscribe(p: &Unsubscribe, out: &mut Vec<u8>) -> Result<(), Error> {
+    if p.pkid == 0 {
+        return Err(Error::PacketIdZero);
+    }
+    if p.filters.is_empty() {
+        return Err(Error::MalformedPacket);
+    }
+    let mut body = Vec::new();
+    write_u16(&mut body, p.pkid);
+    for topic in &p.filters {
+        write_mqtt_string(&mut body, topic);
+    }
+    out.push(0xA2);
+    out.extend_from_slice(&encode_remaining_length(body.len())?);
+    out.extend_from_slice(&body);
+    Ok(())
+}
+
+fn encode_unsuback(p: &UnsubAck, out: &mut Vec<u8>) -> Result<(), Error> {
+    if p.pkid == 0 {
+        return Err(Error::PacketIdZero);
+    }
+    out.push(0xB0); // type 11 + flag 0 
+    out.push(0x02); // remaining len exactly 2 
+    write_u16(out, p.pkid);
+    Ok(())
+}
+fn decode_subscribe(f: u8, body: &[u8]) -> Result<Packet, Error> {
+    if f != 0x02 {
+        return Err(Error::InvalidFixedHeaderFlags {
+            packet_type: 8,
+            flags: f,
+        });
+    }
+    let mut curr = body;
+    let pkid = read_u16(&mut curr)?;
+    if pkid == 0 {
+        return Err(Error::PacketIdZero);
+    }
+    let mut filters = Vec::new();
+    while !curr.is_empty() {
+        let topic = read_mqtt_string(&mut curr)?;
+        let q = read_u8(&mut curr)?;
+        let qos = Qos::try_from(q)?;
+        filters.push((topic, qos));
+    }
+    if filters.is_empty() {
+        return Err(Error::MalformedPacket);
+    }
+    Ok(Packet::Subscribe(Subscribe { pkid, filters }))
+}
+fn decode_unsubscribe(f: u8, body: &[u8]) -> Result<Packet, Error> {
+    if f != 0x02 {
+        return Err(Error::InvalidFixedHeaderFlags {
+            packet_type: 10,
+            flags: f,
+        });
+    }
+    let mut curr = body;
+    let pkid = read_u16(&mut curr)?;
+    if pkid == 0 {
+        return Err(Error::PacketIdZero);
+    }
+    let mut filters = Vec::new();
+    while !curr.is_empty() {
+        filters.push(read_mqtt_string(&mut curr)?);
+    }
+    if filters.is_empty() {
+        return Err(Error::MalformedPacket);
+    }
+    Ok(Packet::UnSubscribe(Unsubscribe { pkid, filters }))
+}
+fn decode_suback(f: u8, body: &[u8]) -> Result<Packet, Error> {
+    if f != 0 {
+        return Err(Error::InvalidFixedHeaderFlags {
+            packet_type: 9,
+            flags: f,
+        });
+    }
+    let mut curr = body;
+    let pkid = read_u16(&mut curr)?;
+    if pkid == 0 {
+        return Err(Error::PacketIdZero);
+    }
+    let return_codes = curr.to_vec();
+    if return_codes.is_empty() {
+        return Err(Error::MalformedPacket);
+    }
+    if !return_codes.iter().all(|c| valid_suback_code(*c)) {
+        return Err(Error::MalformedPacket);
+    }
+    Ok(Packet::SubAck(SubAck { pkid, return_codes }))
+}
+fn decode_unsuback(f: u8, body: &[u8]) -> Result<Packet, Error> {
+    if f != 0 {
+        return Err(Error::InvalidFixedHeaderFlags {
+            packet_type: 11,
+            flags: f,
+        });
+    }
+    if body.len() != 2 {
+        return Err(Error::MalformedPacket);
+    }
+    let mut curr = body;
+    let pkid = read_u16(&mut curr)?;
+    if pkid == 0 {
+        return Err(Error::PacketIdZero);
+    }
+    Ok(Packet::UnsubAck(UnsubAck { pkid }))
+}
+
+fn valid_suback_code(c: u8) -> bool {
+    matches!(c, 0x00 | 0x01 | 0x02 | 0x80)
 }
