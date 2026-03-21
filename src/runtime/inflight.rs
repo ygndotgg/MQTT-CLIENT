@@ -2,18 +2,28 @@ use crate::types::{Command, Packet};
 
 #[derive(Debug, Clone)]
 pub struct OutgoingOp {
-    token_id: u32,
-    command: Command,
-    packet: Packet,
+    pub token_id: usize,
+    pub command: Command,
+    pub packet: Packet,
+}
+
+impl OutgoingOp {
+    pub fn new(token_id: usize, command: Command, packet: Packet) -> Self {
+        Self {
+            token_id,
+            command,
+            packet,
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct InflightStore {
-    outgoing: Vec<Option<OutgoingOp>>,
-    inflight: u16,
+    pub outgoing: Vec<Option<OutgoingOp>>,
+    pub inflight: u16,
     max_inflight: u16,
-    last_ack: u16,
-    collision: Option<(u16, OutgoingOp)>,
+    pub last_ack: u16,
+    pub collision: Option<(u16, OutgoingOp)>,
     pub pending: Vec<OutgoingOp>,
     pub outgoing_rel: Vec<bool>, // qos2 sender side
     pub incoming_pub: Vec<bool>, // qos2 receiver side
