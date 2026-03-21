@@ -1,14 +1,20 @@
 use mqtt_client::codec::{decode_packet, encode_packet};
 use mqtt_client::protocol::v4::error::Error;
-use mqtt_client::types::{Packet, Qos, SubAck, Subscribe, UnsubAck, Unsubscribe};
+use mqtt_client::types::{Filter, Packet, Qos, SubAck, Subscribe, UnsubAck, Unsubscribe};
 
 #[test]
 fn t_subscribe_roundtrip_and_golden() {
     let p = Packet::Subscribe(Subscribe {
         pkid: 10,
         filters: vec![
-            ("a".into(), Qos::AtMostOnce),
-            ("bc".into(), Qos::ExactlyOnce),
+            Filter {
+                path: "a".into(),
+                qos: Qos::AtMostOnce,
+            },
+            Filter {
+                path: "bc".into(),
+                qos: Qos::ExactlyOnce,
+            },
         ],
     });
 

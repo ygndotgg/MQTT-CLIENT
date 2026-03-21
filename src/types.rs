@@ -48,6 +48,83 @@ pub enum Packet {
     Disconnect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketType {
+    Connect = 1,
+    ConnAck = 2,
+    Publish = 3,
+    PubAck = 4,
+    PubRec = 5,
+    PubRel = 6,
+    PubComp = 7,
+    Subscribe = 8,
+    SubAck = 9,
+    Unsubscribe = 10,
+    UnsubAck = 11,
+    PingReq = 12,
+    PingResp = 13,
+    Disconnect = 14,
+}
+
+impl TryFrom<u8> for PacketType {
+    type Error = Error;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(PacketType::Connect),
+            2 => Ok(PacketType::ConnAck),
+            3 => Ok(PacketType::Publish),
+            4 => Ok(PacketType::PubAck),
+            5 => Ok(PacketType::PubRec),
+            6 => Ok(PacketType::PubRel),
+            7 => Ok(PacketType::PubComp),
+            8 => Ok(PacketType::Subscribe),
+            9 => Ok(PacketType::SubAck),
+            10 => Ok(PacketType::Unsubscribe),
+            11 => Ok(PacketType::UnsubAck),
+            12 => Ok(PacketType::PingReq),
+            13 => Ok(PacketType::PingResp),
+            14 => Ok(PacketType::Disconnect),
+            v => Err(Error::InvalidPacketType(v)),
+        }
+    }
+}
+
+impl From<PacketType> for u8 {
+    fn from(packet_type: PacketType) -> Self {
+        packet_type as u8
+    }
+}
+
+impl Packet {
+    pub fn packet_type(&self) -> PacketType {
+        match self {
+            Packet::Connect(_) => PacketType::Connect,
+            Packet::ConnAck(_) => PacketType::ConnAck,
+            Packet::Publish(_) => PacketType::Publish,
+            Packet::PubAck(_) => PacketType::PubAck,
+            Packet::PubRec(_) => PacketType::PubRec,
+            Packet::PubRel(_) => PacketType::PubRel,
+            Packet::PubComp(_) => PacketType::PubComp,
+            Packet::Subscribe(_) => PacketType::Subscribe,
+            Packet::SubAck(_) => PacketType::SubAck,
+            Packet::UnSubscribe(_) => PacketType::Unsubscribe,
+            Packet::UnsubAck(_) => PacketType::UnsubAck,
+            Packet::PingReq => PacketType::PingReq,
+            Packet::PingResp => PacketType::PingResp,
+            Packet::Disconnect => PacketType::Disconnect,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Command {
+    Publish { token_id: usize, publish: Publish },
+    Subscribe { token_id: usize, subscribe: Subscribe },
+    Unsubscribe { token_id: usize, unsubscribe: Unsubscribe },
+    Ping,
+    Disconnect,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Connect {
     pub clean_session: bool,
@@ -103,9 +180,15 @@ pub struct PubComp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Filter {
+    pub path: String,
+    pub qos: Qos,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subscribe {
     pub pkid: u16,
-    pub filters: Vec<(String, Qos)>,
+    pub filters: Vec<Filter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
