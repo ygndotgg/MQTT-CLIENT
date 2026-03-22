@@ -84,7 +84,7 @@ impl RuntimeState {
         }
         // i'm waiting
         if self.await_pingresp && now.duration_since(self.last_outgoing) >= self.keep_alive {
-            return Err(RuntimeError::AwaitPingRespTimout);
+            return Err(RuntimeError::AwaitPingRespTimeout);
         }
         // i need to send
         let idle_since = max(self.last_incoming, self.last_outgoing);
