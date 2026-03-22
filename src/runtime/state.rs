@@ -1,3 +1,8 @@
+use std::{
+    cmp::max,
+    time::{Duration, Instant},
+};
+
 use crate::{
     runtime::{
         inflight::{InflightStore, OutgoingOp},
@@ -26,6 +31,8 @@ pub enum RuntimeError {
     UnsolicitedPubComp(u16),
     UnsolicitedPubRel(u16),
     PacketIdOutOfRange(u16),
+    AwaitPingRespTimeout,
+    ConnectionInactive,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +46,11 @@ pub struct RuntimeState {
     pub pkid_pool: PacketIdPool,
     pub inflight: InflightStore,
     pub active: bool,
+    pub keep_alive: Duration,
+    pub await_pingresp: bool,
+    pub last_incoming: Instant,
+    pub last_outgoing: Instant,
+    pub ping_retry_count: u8,
 }
 
 impl RuntimeState {
@@ -47,8 +59,82 @@ impl RuntimeState {
             pkid_pool: PacketIdPool::new(max_inflight),
             inflight: InflightStore::new(max_inflight),
             active: false,
+            keep_alive: Duration::from_secs(1),
+            await_pingresp: false,
+            last_incoming: Instant::now(),
+            last_outgoing: Instant::now(),
+            ping_retry_count: 0,
         }
     }
+    pub fn new_with_keep_alive(max_inflight: u16, keep_alive: Duration) -> Self {
+        Self {
+            pkid_pool: PacketIdPool::new(max_inflight),
+            inflight: InflightStore::new(max_inflight),
+            active: false,
+            keep_alive,
+            await_pingresp: false,
+            last_incoming: Instant::now(),
+            last_outgoing: Instant::now(),
+            ping_retry_count: 0,
+        }
+    }
+    pub fn on_tick(&mut self, now: Instant) -> Result<Option<Packet>, RuntimeError> {
+        if !self.active {
+            return Ok(None);
+        }
+        // i'm waiting
+        if self.await_pingresp && now.duration_since(self.last_outgoing) >= self.keep_alive {
+            return Err(RuntimeError::AwaitPingRespTimout);
+        }
+        // i need to send
+        let idle_since = max(self.last_incoming, self.last_outgoing);
+        if now.duration_since(idle_since) >= self.keep_alive {
+            self.await_pingresp = true;
+            self.last_outgoing = now;
+            Ok(Some(Packet::PingReq))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn on_pingresp(&mut self, now: Instant) {
+        self.await_pingresp = false;
+        self.last_incoming = now;
+    }
+    pub fn on_connection_lost(&mut self, clean_session: bool) {
+        self.active = false;
+        self.await_pingresp = false;
+        self.ping_retry_count = 0;
+
+        for slot in &mut self.inflight.outgoing {
+            if let Some(op) = slot.take() {
+                self.inflight.pending.push(op);
+            }
+        }
+
+        if let Some((_, ops)) = self.inflight.collision.take() {
+            self.inflight.pending.push(ops);
+        }
+
+        self.inflight.inflight = 0;
+        if clean_session {
+            self.pkid_pool.reset();
+            self.inflight.last_ack = 0;
+            self.inflight.outgoing_rel.fill(false);
+            self.inflight.incoming_pub.fill(false);
+        }
+    }
+    pub fn on_connection_restored(&mut self) -> Vec<Packet> {
+        self.active = true;
+        self.resend_pending_on_reconnect()
+    }
+    pub fn note_incoming_activity(&mut self, now: Instant) {
+        self.last_incoming = now;
+    }
+    pub fn note_outgoing_activity(&mut self, now: Instant) {
+        self.last_outgoing = now;
+    }
+
     pub fn set_active(&mut self, active: bool) {
         self.active = active;
     }
