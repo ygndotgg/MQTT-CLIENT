@@ -9,6 +9,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Completion {
     PubAck { token_id: usize, pkid: u16 },
+    PubComp { token_id: usize, pkid: u16 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +22,16 @@ pub struct AckResult {
 pub enum RuntimeError {
     InvalidCommand,
     UnsolicitedAck(u16),
+    UnsolicitedPubRec(u16),
+    UnsolicitedPubComp(u16),
+    UnsolicitedPubRel(u16),
+    PacketIdOutOfRange(u16),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IncomingQos2Result {
+    FirstSeen { pubrec: Packet },
+    Duplicate { pubrec: Packet },
 }
 
 #[derive(Debug)]
@@ -38,31 +49,67 @@ impl RuntimeState {
             active: false,
         }
     }
-    pub fn on_puback(&mut self, pkid: u16) -> Option<OutgoingOp> {
-        self.inflight.release_ack(pkid)
-    }
     pub fn set_active(&mut self, active: bool) {
         self.active = active;
     }
 
-    pub fn on_pubrec(&mut self, pkid: u16) -> Option<Packet> {
-        self.inflight.outgoing_rel[pkid as usize] = true;
-        Some(Packet::PubRel(crate::types::PubRel { pkid }))
-    }
-    pub fn on_pubcomp(&mut self, pkid: u16) -> Option<OutgoingOp> {
-        if !self.inflight.outgoing_rel[pkid as usize] {
-            return None;
+    pub fn on_pubrec_checked(&mut self, pkid: u16) -> Result<Packet, RuntimeError> {
+        let i = self.idx(pkid)?;
+        if self.inflight.outgoing[i].is_none() {
+            return Err(RuntimeError::UnsolicitedPubRec(pkid));
         }
-        self.inflight.outgoing_rel[pkid as usize] = false;
-        self.inflight.release_ack(pkid)
+        self.inflight.outgoing_rel[i] = true;
+        Ok(Packet::PubRel(crate::types::PubRel { pkid }))
     }
-    pub fn on_incoming_qos2_publish(&mut self, pkid: u16) {
-        self.inflight.incoming_pub[pkid as usize] = true;
+
+    pub fn on_pubcomp_checked(&mut self, pkid: u16) -> Result<AckResult, RuntimeError> {
+        let i = self.idx(pkid)?;
+        if !self.inflight.outgoing_rel[i] || self.inflight.outgoing[i].is_none() {
+            return Err(RuntimeError::UnsolicitedPubComp(pkid));
+        }
+        self.inflight.outgoing_rel[i] = false;
+        let released = self
+            .inflight
+            .release_ack(pkid)
+            .ok_or(RuntimeError::UnsolicitedPubComp(pkid))?;
+        let next_packet = self.promote_collision(pkid);
+        Ok(AckResult {
+            completion: Completion::PubComp {
+                token_id: released.token_id,
+                pkid,
+            },
+            next_packet,
+        })
     }
-    pub fn on_incoming_pubrel(&mut self, pkid: u16) -> bool {
-        let seen = self.inflight.incoming_pub[pkid as usize];
-        self.inflight.incoming_pub[pkid as usize] = false;
-        seen
+
+    pub fn on_incoming_qos2_publish_checked(
+        &mut self,
+        pkid: u16,
+    ) -> Result<IncomingQos2Result, RuntimeError> {
+        let i = self.idx(pkid)?;
+        let pubrec = Packet::PubRec(crate::types::PubRec { pkid });
+        if self.inflight.incoming_pub[i] {
+            return Ok(IncomingQos2Result::Duplicate { pubrec });
+        }
+        self.inflight.incoming_pub[i] = true;
+        Ok(IncomingQos2Result::FirstSeen { pubrec })
+    }
+
+    pub fn on_incoming_pubrel_checked(&mut self, pkid: u16) -> Result<Packet, RuntimeError> {
+        let i = self.idx(pkid)?;
+        if !self.inflight.incoming_pub[i] {
+            return Err(RuntimeError::UnsolicitedPubRel(pkid));
+        }
+        self.inflight.incoming_pub[i] = false;
+        Ok(Packet::PubComp(crate::types::PubComp { pkid }))
+    }
+
+    fn idx(&self, pkid: u16) -> Result<usize, RuntimeError> {
+        let i = pkid as usize;
+        if pkid == 0 || i >= self.inflight.outgoing.len() {
+            return Err(RuntimeError::PacketIdOutOfRange(pkid));
+        }
+        Ok(i)
     }
     pub fn clean_for_reconnect(&mut self, clean_session: bool) {
         for slot in &mut self.inflight.outgoing {
@@ -88,6 +135,7 @@ impl RuntimeState {
         if needs_ack && publish.pkid == 0 {
             publish.pkid = self.pkid_pool.next_candidate();
         }
+
         let wire = Packet::Publish(publish.clone());
         let op = OutgoingOp::new(
             token_id,

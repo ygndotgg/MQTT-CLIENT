@@ -1,7 +1,7 @@
 use mqtt_client::runtime::{
     inflight::{InflightStore, OutgoingOp},
     pkid::PacketIdPool,
-    state::RuntimeState,
+    state::{IncomingQos2Result, RuntimeState},
 };
 use mqtt_client::types::{Command, Packet, Publish, Qos};
 
@@ -78,12 +78,12 @@ fn qos2_pubrec_sets_rel_and_pubcomp_clears() {
     });
     assert!(state.inflight.try_insert(3, make_op(88, publish)));
 
-    let next = state.on_pubrec(3);
-    assert_eq!(next, Some(Packet::PubRel(mqtt_client::types::PubRel { pkid: 3 })));
+    let next = state.on_pubrec_checked(3).unwrap();
+    assert_eq!(next, Packet::PubRel(mqtt_client::types::PubRel { pkid: 3 }));
     assert!(state.inflight.outgoing_rel[3]);
 
-    let done = state.on_pubcomp(3);
-    assert!(done.is_some());
+    let done = state.on_pubcomp_checked(3).unwrap();
+    assert_eq!(done.completion, mqtt_client::runtime::state::Completion::PubComp { token_id: 88, pkid: 3 });
     assert!(!state.inflight.outgoing_rel[3]);
     assert!(state.inflight.outgoing[3].is_none());
 }
@@ -91,14 +91,15 @@ fn qos2_pubrec_sets_rel_and_pubcomp_clears() {
 #[test]
 fn incoming_qos2_publish_then_pubrel() {
     let mut state = RuntimeState::new(8);
-    state.on_incoming_qos2_publish(5);
+    let first = state.on_incoming_qos2_publish_checked(5).unwrap();
+    assert!(matches!(first, IncomingQos2Result::FirstSeen { .. }));
     assert!(state.inflight.incoming_pub[5]);
 
-    let seen = state.on_incoming_pubrel(5);
-    assert!(seen);
+    let seen = state.on_incoming_pubrel_checked(5).unwrap();
+    assert_eq!(seen, Packet::PubComp(mqtt_client::types::PubComp { pkid: 5 }));
     assert!(!state.inflight.incoming_pub[5]);
 
     // second PUBREL without corresponding incoming qos2 publish
-    let seen_again = state.on_incoming_pubrel(5);
-    assert!(!seen_again);
+    let seen_again = state.on_incoming_pubrel_checked(5);
+    assert!(seen_again.is_err());
 }
