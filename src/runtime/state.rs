@@ -3,13 +3,28 @@ use crate::{
         inflight::{InflightStore, OutgoingOp},
         pkid::PacketIdPool,
     },
-    types::Packet,
+    types::{Command, Packet},
 };
+
+pub enum Completion {
+    PubAck { token_id: usize, pkid: u16 },
+}
+
+pub struct AckResult {
+    pub completion: Completion,
+    pub next_packet: Option<Packet>,
+}
+
+pub enum RuntimeError {
+    InvalidCommand,
+    UnsolicitedAck(u16),
+}
 
 #[derive(Debug)]
 pub struct RuntimeState {
     pub pkid_pool: PacketIdPool,
     pub inflight: InflightStore,
+    pub active: bool,
 }
 
 impl RuntimeState {
@@ -17,10 +32,14 @@ impl RuntimeState {
         Self {
             pkid_pool: PacketIdPool::new(max_inflight),
             inflight: InflightStore::new(max_inflight),
+            active: false,
         }
     }
     pub fn on_puback(&mut self, pkid: u16) -> Option<OutgoingOp> {
         self.inflight.release_ack(pkid)
+    }
+    pub fn set_active(&mut self, active: bool) {
+        self.active = active;
     }
 
     pub fn on_pubrec(&mut self, pkid: u16) -> Option<Packet> {
@@ -56,5 +75,20 @@ impl RuntimeState {
             self.inflight.outgoing_rel.fill(false);
             self.inflight.incoming_pub.fill(false);
         }
+    }
+    pub fn on_command_publish(&mut self, command: Command) -> Result<Option<Packet>, RuntimeError> {
+        unimplemented!()
+    }
+    pub fn resend_pending_on_reconnect(&mut self) -> Vec<Packet> {
+        unimplemented!()
+    }
+    pub fn on_puback_checked(&mut self, pkid: u16) -> Result<AckResult, RuntimeError> {
+        unimplemented!()
+    }
+    fn promote_collision(&mut self, acked_pkid: u16) -> Option<Packet> {
+        unimplemented!()
+    }
+    fn mark_publish_dup(&self) -> Packet {
+        unimplemented!()
     }
 }

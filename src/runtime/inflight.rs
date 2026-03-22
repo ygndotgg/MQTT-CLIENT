@@ -48,18 +48,26 @@ impl InflightStore {
             return false;
         }
         let i = pkid as usize;
-        if self.outgoing[i].is_some() {
-            self.collision = Some((pkid, op));
-            return false;
+        match self.outgoing.get_mut(i) {
+            Some(slot) => {
+                if slot.is_some() {
+                    self.collision = Some((pkid, op));
+                    return false;
+                } else {
+                    self.outgoing[i] = Some(op);
+                    self.inflight += 1;
+                    return true;
+                }
+            }
+            None => {
+                return false;
+            }
         }
-        self.outgoing[i] = Some(op);
-        self.inflight += 1;
-        true
     }
     pub fn release_ack(&mut self, pkid: u16) -> Option<OutgoingOp> {
         let i = pkid as usize;
         self.last_ack = pkid;
-        let out = self.outgoing[i].take();
+        let out = self.outgoing.get_mut(i)?.take();
         if out.is_some() {
             self.inflight -= 1;
         }
