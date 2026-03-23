@@ -118,9 +118,18 @@ impl Packet {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Publish { token_id: usize, publish: Publish },
-    Subscribe { token_id: usize, subscribe: Subscribe },
-    Unsubscribe { token_id: usize, unsubscribe: Unsubscribe },
+    Publish {
+        token_id: usize,
+        publish: Publish,
+    },
+    Subscribe {
+        token_id: usize,
+        subscribe: Subscribe,
+    },
+    Unsubscribe {
+        token_id: usize,
+        unsubscribe: Unsubscribe,
+    },
     Ping,
     Disconnect,
 }

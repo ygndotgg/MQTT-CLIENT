@@ -9,6 +9,7 @@ use crate::{
         pkid::PacketIdPool,
     },
     types::{Command, Packet, Qos},
+
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,16 +56,7 @@ pub struct RuntimeState {
 
 impl RuntimeState {
     pub fn new(max_inflight: u16) -> Self {
-        Self {
-            pkid_pool: PacketIdPool::new(max_inflight),
-            inflight: InflightStore::new(max_inflight),
-            active: false,
-            keep_alive: Duration::from_secs(1),
-            await_pingresp: false,
-            last_incoming: Instant::now(),
-            last_outgoing: Instant::now(),
-            ping_retry_count: 0,
-        }
+        Self::new_with_keep_alive(max_inflight, Duration::from_secs(30))
     }
     pub fn new_with_keep_alive(max_inflight: u16, keep_alive: Duration) -> Self {
         Self {
@@ -198,19 +190,7 @@ impl RuntimeState {
         Ok(i)
     }
     pub fn clean_for_reconnect(&mut self, clean_session: bool) {
-        for slot in &mut self.inflight.outgoing {
-            if let Some(op) = slot.take() {
-                self.inflight.pending.push(op);
-            }
-        }
-        self.inflight.inflight = 0;
-        self.inflight.collision = None;
-        if clean_session {
-            self.pkid_pool.reset();
-            self.inflight.last_ack = 0;
-            self.inflight.outgoing_rel.fill(false);
-            self.inflight.incoming_pub.fill(false);
-        }
+        self.on_connection_lost(clean_session);
     }
     pub fn on_command_publish(&mut self, command: Command) -> Result<Option<Packet>, RuntimeError> {
         let (token_id, mut publish) = match command {
