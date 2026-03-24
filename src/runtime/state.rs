@@ -132,6 +132,7 @@ impl RuntimeState {
     }
 
     pub fn on_pubrec_checked(&mut self, pkid: u16) -> Result<Packet, RuntimeError> {
+
         let i = self.idx(pkid)?;
         if self.inflight.outgoing[i].is_none() {
             return Err(RuntimeError::UnsolicitedPubRec(pkid));
