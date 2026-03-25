@@ -274,3 +274,138 @@ pub fn start_runtime<T: Transport + Send + 'static>(
     });
     ClientHandle::new(command_tx, event_rx)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        codec::{decode_packet, encode_packet},
+        runtime::events::RuntimeEvent,
+        runtime::state::Completion,
+        types::{Command, Packet, Publish, PubAck, Qos},
+    };
+    use std::{
+        sync::mpsc::channel,
+        time::{Duration, Instant},
+    };
+
+    #[derive(Default)]
+    struct FakeTransport {
+        reads: Vec<Vec<u8>>,
+        writes: Vec<Vec<u8>>,
+    }
+
+    impl Transport for FakeTransport {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.reads.is_empty() {
+                return Ok(0);
+            }
+
+            let next = self.reads.remove(0);
+            let n = next.len().min(buf.len());
+            buf[..n].copy_from_slice(&next[..n]);
+            Ok(n)
+        }
+
+        fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+            self.writes.push(buf.to_vec());
+            Ok(())
+        }
+    }
+
+    fn build_task() -> (RuntimeTask<FakeTransport>, std::sync::mpsc::Sender<Command>, std::sync::mpsc::Receiver<RuntimeEvent>) {
+        let (command_tx, command_rx) = channel();
+        let (event_tx, event_rx) = channel();
+        let mut state = RuntimeState::new(4);
+        state.set_active(true);
+        let driver = RuntimeDriver::new(state, false);
+        let transport = FakeTransport::default();
+        let task = RuntimeTask::new(command_rx, event_tx, driver, transport, Duration::from_millis(1));
+        (task, command_tx, event_rx)
+    }
+
+    #[test]
+    fn command_publish_writes_encoded_publish() {
+        let (mut task, command_tx, _event_rx) = build_task();
+        let publish = Publish {
+            dup: false,
+            qos: Qos::AtLeastOnce,
+            retain: false,
+            topic: "a/b".into(),
+            pkid: 0,
+            payload: b"hello".to_vec(),
+        };
+
+        command_tx
+            .send(Command::Publish {
+                token_id: 1,
+                publish: publish.clone(),
+            })
+            .unwrap();
+
+        task.poll_command().unwrap();
+        assert_eq!(task.transport.writes.len(), 1);
+
+        let packet = decode_packet(&task.transport.writes[0]).unwrap();
+        if let Packet::Publish(decoded) = packet {
+            assert_eq!(decoded.topic, publish.topic);
+            assert_eq!(decoded.payload, publish.payload);
+            assert!(decoded.pkid != 0);
+        } else {
+            panic!("expected publish");
+        }
+    }
+
+    #[test]
+    fn incoming_puback_emits_completion() {
+        let (mut task, command_tx, event_rx) = build_task();
+        let publish = Publish {
+            dup: false,
+            qos: Qos::AtLeastOnce,
+            retain: false,
+            topic: "x".into(),
+            pkid: 0,
+            payload: b"y".to_vec(),
+        };
+
+        command_tx
+            .send(Command::Publish {
+                token_id: 7,
+                publish,
+            })
+            .unwrap();
+        task.poll_command().unwrap();
+
+        let encoded_publish = task.transport.writes.pop().unwrap();
+        let pkid = match decode_packet(&encoded_publish).unwrap() {
+            Packet::Publish(p) => p.pkid,
+            _ => panic!("expected publish"),
+        };
+
+        let mut ack_bytes = Vec::new();
+        encode_packet(&Packet::PubAck(PubAck { pkid }), &mut ack_bytes).unwrap();
+        task.transport.reads.push(ack_bytes);
+
+        task.poll_incoming().unwrap();
+        let event = event_rx.recv().unwrap();
+        assert_eq!(
+            event,
+            RuntimeEvent::Completion(Completion::PubAck { token_id: 7, pkid })
+        );
+    }
+
+    #[test]
+    fn poll_tick_writes_pingreq_after_idle() {
+        let (mut task, _, _event_rx) = build_task();
+        task.driver.state.set_active(true);
+        task.driver.state.last_incoming = Instant::now() - Duration::from_secs(60);
+        task.driver.state.last_outgoing = Instant::now() - Duration::from_secs(60);
+        task.last_tick = Instant::now() - Duration::from_secs(60);
+
+        task.poll_tick().unwrap();
+        assert_eq!(task.transport.writes.len(), 1);
+
+        let packet = decode_packet(&task.transport.writes[0]).unwrap();
+        assert_eq!(packet, Packet::PingReq);
+    }
+}
