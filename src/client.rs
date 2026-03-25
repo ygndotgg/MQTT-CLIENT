@@ -81,13 +81,21 @@ mod tests {
 
     #[test]
     fn token_id_increments() {
-        let (command_tx,_command_rx) = channel();
-        let (_event_tx,event_rx) = channel();
+        let (command_tx, _command_rx) = channel();
+        let (_event_tx, event_rx) = channel();
         let mut client = ClientHandle::new(command_tx, event_rx);
-        
+
+        let first = client
+            .publish("a", Qos::AtMostOnce, false, Vec::<u8>::new())
+            .unwrap();
+        let second = client
+            .publish("b", Qos::AtMostOnce, false, Vec::<u8>::new())
+            .unwrap();
+
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
     }
 
-    
     #[test]
     fn recv_event_returns_runtime_event() {
         let (command_tx, _command_rx) = channel();

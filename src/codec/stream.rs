@@ -1,6 +1,7 @@
 use crate::{
     codec::{decode_packet, parse_fixed_header},
     protocol::v4::error::Error,
+    runtime::task::RuntimeTaskError,
     types::Packet,
 };
 
@@ -38,4 +39,8 @@ impl FrameParser {
             FrameState::Ready(frame) => Ok(Some(decode_packet(&frame)?)),
         }
     }
+}
+
+pub fn try_parse_frame(buf: &Vec<u8>) -> Result<Option<(Packet, usize)>, RuntimeTaskError> {
+    unimplemented!()
 }
