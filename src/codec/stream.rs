@@ -1,7 +1,6 @@
 use crate::{
     codec::{decode_packet, parse_fixed_header},
     protocol::v4::error::Error,
-    runtime::task::RuntimeTaskError,
     types::Packet,
 };
 
@@ -17,6 +16,9 @@ pub struct FrameParser {
 }
 
 impl FrameParser {
+    pub fn new() -> Self {
+        Self { buf: Vec::new() }
+    }
     pub fn push(&mut self, chunk: &[u8]) {
         self.buf.extend_from_slice(chunk);
     }
@@ -39,8 +41,4 @@ impl FrameParser {
             FrameState::Ready(frame) => Ok(Some(decode_packet(&frame)?)),
         }
     }
-}
-
-pub fn try_parse_frame(buf: &Vec<u8>) -> Result<Option<(Packet, usize)>, RuntimeTaskError> {
-    unimplemented!()
 }

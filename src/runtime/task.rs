@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     client::ClientHandle,
-    codec::{self, encode_packet},
+    codec::{FrameParser, encode_packet},
     runtime::{
         driver::{DriverAction, RuntimeDriver},
         events::RuntimeEvent,
@@ -31,8 +31,8 @@ pub struct RuntimeTask<T: Transport> {
     pub driver: RuntimeDriver,
     // pub outbox: Vec<Packet>,
     pub transport: T,
+    parser: FrameParser,
     pub read_buf: [u8; 4096],
-    pub pendeing_read: Vec<u8>,
     pub tick_interval: Duration,
     pub last_tick: Instant,
 }
@@ -55,14 +55,24 @@ impl<T: Transport> RuntimeTask<T> {
             event_tx,
             driver,
             transport,
+            parser: FrameParser::new(),
             read_buf: [0; 4096],
-            pendeing_read: Vec::new(),
             tick_interval,
             last_tick: Instant::now(),
         }
     }
-    fn read_one_packet(&mut self)->Result<Option<Packet>,RuntimeTaskError> {
-        
+    fn read_one_packet(&mut self) -> Result<Option<Packet>, RuntimeTaskError> {
+        let n = self
+            .transport
+            .read(&mut self.read_buf)
+            .map_err(RuntimeTaskError::Io)?;
+        if n == 0 {
+            return Ok(None);
+        }
+        self.parser.push(&self.read_buf[..n]);
+        self.parser
+            .next_packet()
+            .map_err(RuntimeTaskError::Protocol)
     }
     pub fn recv_cmd(&mut self) -> Result<Command, RuntimeTaskError> {
         match self.command_rx.recv() {
@@ -79,12 +89,28 @@ impl<T: Transport> RuntimeTask<T> {
             .map_err(RuntimeTaskError::Runtime)?;
         self.handle_actions(actions)
     }
+
+    fn poll_command(&mut self) -> Result<(), RuntimeTaskError> {
+        match self.command_rx.try_recv() {
+            Ok(cmd) => {
+                let actions = self
+                    .driver
+                    .handle_event(super::driver::DriverEvent::Command(cmd))
+                    .map_err(RuntimeTaskError::Runtime)?;
+                self.handle_actions(actions)
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => Ok(()),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(RuntimeTaskError::CommandChannelClosed)
+            }
+        }
+    }
+
     fn handle_actions(&mut self, actions: Vec<DriverAction>) -> Result<(), RuntimeTaskError> {
         for action in actions {
             match action {
                 DriverAction::Send(packet) => {
-                    unimplemented!()
-                    // self.outbox.push(packet);
+                    self.send_packet(packet);
                 }
                 DriverAction::Complete(c) => {
                     if let Err(_e) = self.event_tx.send(RuntimeEvent::Completion(c)) {
