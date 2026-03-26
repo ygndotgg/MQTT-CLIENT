@@ -95,6 +95,13 @@ impl<T: Transport> RuntimeTask<T> {
             router: Router::default(),
         }
     }
+    fn fanout_publish(&self, publish: Publish) -> Result<(), RuntimeTaskError> {
+        let client_ids = self.router.matching_clients(&publish.topic);
+        for client_id in client_ids {
+            self.send_event_to(client_id, RuntimeEvent::IncomingPublish(publish.clone()))?;
+        }
+        Ok(())
+    }
 
     fn send_event_to(&self, client_id: usize, event: RuntimeEvent) -> Result<(), RuntimeTaskError> {
         self.registry
@@ -153,12 +160,11 @@ impl<T: Transport> RuntimeTask<T> {
         self.driver.state.note_incoming_activity(now);
         match publish.qos {
             crate::types::Qos::AtMostOnce => {
-                self.router.matching_clients(&publish.topic);
-                self.broadcast_event(RuntimeEvent::IncomingPublish(publish));
+                self.fanout_publish(publish)?;
                 Ok(())
             }
             crate::types::Qos::AtLeastOnce => {
-                self.broadcast_event(RuntimeEvent::IncomingPublish(publish.clone()));
+                self.fanout_publish(publish.clone())?;
                 let puback = Packet::PubAck(crate::types::PubAck { pkid: publish.pkid });
                 self.send_packet(puback)?;
                 Ok(())
@@ -172,10 +178,11 @@ impl<T: Transport> RuntimeTask<T> {
                 {
                     IncomingQos2Result::FirstSeen { pubrec } => {
                         self.send_packet(pubrec)?;
-                        self.broadcast_event(RuntimeEvent::IncomingPublish(publish));
+                        self.fanout_publish(publish)?;
                     }
                     IncomingQos2Result::Duplicate { pubrec } => {
                         self.send_packet(pubrec)?;
+
                     }
                 }
                 Ok(())
@@ -435,5 +442,69 @@ mod tests {
 
         let packet = decode_packet(&task.transport.writes[0]).unwrap();
         assert_eq!(packet, Packet::PingReq);
+    }
+
+    #[test]
+    fn incoming_publish_fanout_routes_only_to_matching_clients() {
+        let (mut task, client_a, _command_tx, event_rx_a) = build_task();
+        let (event_tx_b, event_rx_b) = channel();
+        let (event_tx_c, event_rx_c) = channel();
+
+        let client_b = task.registry.lock().unwrap().register(event_tx_b);
+        let _client_c = task.registry.lock().unwrap().register(event_tx_c);
+
+        task.router
+            .add_subscription(client_a, "sensor/+".to_string());
+        task.router
+            .add_subscription(client_b, "sensor/temp".to_string());
+        task.router
+            .add_subscription(client_b, "sensor/+".to_string());
+
+        let publish = Publish {
+            dup: false,
+            qos: Qos::AtMostOnce,
+            retain: false,
+            topic: "sensor/temp".into(),
+            pkid: 0,
+            payload: b"hello".to_vec(),
+        };
+
+        task.handle_incoming_publish(publish.clone(), Instant::now())
+            .unwrap();
+
+        assert_eq!(
+            event_rx_a.recv().unwrap(),
+            RuntimeEvent::IncomingPublish(publish.clone())
+        );
+        assert_eq!(
+            event_rx_b.recv().unwrap(),
+            RuntimeEvent::IncomingPublish(publish)
+        );
+        assert!(event_rx_c.try_recv().is_err());
+    }
+
+    #[test]
+    fn incoming_qos2_duplicate_is_not_fanned_out_twice() {
+        let (mut task, client_id, _command_tx, event_rx) = build_task();
+        task.router.add_subscription(client_id, "sensor/+".to_string());
+
+        let publish = Publish {
+            dup: false,
+            qos: Qos::ExactlyOnce,
+            retain: false,
+            topic: "sensor/temp".into(),
+            pkid: 3,
+            payload: b"hello".to_vec(),
+        };
+
+        task.handle_incoming_publish(publish.clone(), Instant::now())
+            .unwrap();
+        assert_eq!(
+            event_rx.recv().unwrap(),
+            RuntimeEvent::IncomingPublish(publish.clone())
+        );
+
+        task.handle_incoming_publish(publish, Instant::now()).unwrap();
+        assert!(event_rx.try_recv().is_err());
     }
 }
