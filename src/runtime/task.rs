@@ -13,6 +13,7 @@ use crate::{
     runtime::{
         driver::{DriverAction, RuntimeDriver},
         events::RuntimeEvent,
+        router::Router,
         state::{Completion, IncomingQos2Result, RuntimeError},
         transport::Transport,
     },
@@ -71,6 +72,7 @@ pub struct RuntimeTask<T: Transport> {
     pub read_buf: [u8; 4096],
     pub tick_interval: Duration,
     pub last_tick: Instant,
+    pub router: Router,
 }
 
 impl<T: Transport> RuntimeTask<T> {
@@ -90,6 +92,7 @@ impl<T: Transport> RuntimeTask<T> {
             read_buf: [0; 4096],
             tick_interval,
             last_tick: Instant::now(),
+            router: Router::default(),
         }
     }
 
@@ -150,6 +153,7 @@ impl<T: Transport> RuntimeTask<T> {
         self.driver.state.note_incoming_activity(now);
         match publish.qos {
             crate::types::Qos::AtMostOnce => {
+                self.router.matching_clients(&publish.topic);
                 self.broadcast_event(RuntimeEvent::IncomingPublish(publish));
                 Ok(())
             }
@@ -294,10 +298,7 @@ mod tests {
         types::{Command, Packet, PubAck, Publish, Qos},
     };
     use std::{
-        sync::{
-            Arc, Mutex,
-            mpsc::channel,
-        },
+        sync::{Arc, Mutex, mpsc::channel},
         time::{Duration, Instant},
     };
 
