@@ -18,6 +18,7 @@ fn command_publish_assigns_pkid_inserts_inflight_and_returns_wire_packet() {
     rt.set_active(true);
 
     let cmd = Command::Publish {
+        client_id: 1,
         token_id: 42,
         publish: qos1_publish(0),
     };
@@ -40,6 +41,7 @@ fn offline_publish_goes_to_pending() {
 
     let out = rt
         .on_command_publish(Command::Publish {
+            client_id: 1,
             token_id: 7,
             publish: qos1_publish(0),
         })
@@ -53,6 +55,7 @@ fn reconnect_resend_sets_dup_true_for_qos1() {
     let mut rt = RuntimeState::new(8);
     rt.set_active(false);
     rt.on_command_publish(Command::Publish {
+        client_id: 1,
         token_id: 9,
         publish: qos1_publish(0),
     })
@@ -76,6 +79,7 @@ fn puback_returns_completion_with_token_id() {
 
     let out = rt
         .on_command_publish(Command::Publish {
+            client_id: 1,
             token_id: 99,
             publish: qos1_publish(0),
         })
@@ -103,6 +107,7 @@ fn puback_promotes_collision_and_returns_next_packet() {
     // First publish occupies pkid=1
     let first = rt
         .on_command_publish(Command::Publish {
+            client_id: 1,
             token_id: 1,
             publish: qos1_publish(1),
         })
@@ -112,6 +117,7 @@ fn puback_promotes_collision_and_returns_next_packet() {
     // Same pkid collision gets deferred
     let second = rt
         .on_command_publish(Command::Publish {
+            client_id: 1,
             token_id: 2,
             publish: qos1_publish(1),
         })

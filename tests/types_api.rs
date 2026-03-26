@@ -36,14 +36,17 @@ fn t_minimal_command_variants_are_constructible() {
     };
 
     let _ = Command::Publish {
+        client_id: 1,
         token_id: 1,
         publish,
     };
     let _ = Command::Subscribe {
+        client_id: 1,
         token_id: 2,
         subscribe,
     };
     let _ = Command::Unsubscribe {
+        client_id: 1,
         token_id: 3,
         unsubscribe,
     };

@@ -49,6 +49,7 @@ fn incoming_puback_emits_completion_action() {
 
     let sent = driver
         .handle_event(DriverEvent::Command(Command::Publish {
+            client_id: 1,
             token_id: 7,
             publish: qos1_publish(0),
         }))
@@ -68,7 +69,7 @@ fn incoming_puback_emits_completion_action() {
 
     assert!(out
         .iter()
-        .any(|a| matches!(a, DriverAction::Complete(Completion::PubAck { token_id: 7, pkid: x }) if *x == pkid)));
+        .any(|a| matches!(a, DriverAction::CompleteFor { client_id: 1, completion: Completion::PubAck { token_id: 7, pkid: x } } if *x == pkid)));
 }
 
 #[test]
@@ -78,6 +79,7 @@ fn incoming_pubcomp_emits_completion_action() {
 
     let sent = driver
         .handle_event(DriverEvent::Command(Command::Publish {
+            client_id: 1,
             token_id: 21,
             publish: qos2_publish(0),
         }))
@@ -107,5 +109,5 @@ fn incoming_pubcomp_emits_completion_action() {
 
     assert!(out
         .iter()
-        .any(|a| matches!(a, DriverAction::Complete(Completion::PubComp { token_id: 21, pkid: x }) if *x == pkid)));
+        .any(|a| matches!(a, DriverAction::CompleteFor { client_id: 1, completion: Completion::PubComp { token_id: 21, pkid: x } } if *x == pkid)));
 }

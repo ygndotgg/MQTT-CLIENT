@@ -19,6 +19,7 @@ pub enum Completion {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AckResult {
+    pub client_id: usize,
     pub completion: Completion,
     pub next_packet: Option<Packet>,
 }
@@ -151,6 +152,7 @@ impl RuntimeState {
             .ok_or(RuntimeError::UnsolicitedPubComp(pkid))?;
         let next_packet = self.promote_collision(pkid);
         Ok(AckResult {
+            client_id: released.client_id,
             completion: Completion::PubComp {
                 token_id: released.token_id,
                 pkid,
@@ -192,8 +194,12 @@ impl RuntimeState {
         self.on_connection_lost(clean_session);
     }
     pub fn on_command_publish(&mut self, command: Command) -> Result<Option<Packet>, RuntimeError> {
-        let (token_id, mut publish) = match command {
-            Command::Publish { token_id, publish } => (token_id, publish),
+        let (client_id, token_id, mut publish) = match command {
+            Command::Publish {
+                client_id,
+                token_id,
+                publish,
+            } => (client_id, token_id, publish),
             _ => return Err(RuntimeError::InvalidCommand),
         };
         let needs_ack = publish.qos != Qos::AtMostOnce;
@@ -204,7 +210,9 @@ impl RuntimeState {
         let wire = Packet::Publish(publish.clone());
         let op = OutgoingOp::new(
             token_id,
+            client_id,
             Command::Publish {
+                client_id,
                 token_id,
                 publish: publish.clone(),
             },
@@ -222,7 +230,12 @@ impl RuntimeState {
                 if self.inflight.collision.is_none() {
                     self.inflight.pending.push(OutgoingOp::new(
                         token_id,
-                        Command::Publish { token_id, publish },
+                        client_id,
+                        Command::Publish {
+                            client_id,
+                            token_id,
+                            publish,
+                        },
                         wire,
                     ));
                 }
@@ -237,6 +250,7 @@ impl RuntimeState {
         let mut out = Vec::new();
         for op in pending {
             if let Command::Publish {
+                client_id,
                 token_id,
                 mut publish,
             } = op.command
@@ -250,7 +264,9 @@ impl RuntimeState {
                 let wire = Packet::Publish(publish.clone());
                 let reinjected = OutgoingOp::new(
                     token_id,
+                    client_id,
                     Command::Publish {
+                        client_id,
                         token_id,
                         publish: publish.clone(),
                     },
@@ -261,7 +277,12 @@ impl RuntimeState {
                         if self.inflight.collision.is_none() {
                             self.inflight.pending.push(OutgoingOp::new(
                                 token_id,
-                                Command::Publish { token_id, publish },
+                                client_id,
+                                Command::Publish {
+                                    client_id,
+                                    token_id,
+                                    publish,
+                                },
                                 wire,
                             ));
                         }
@@ -281,6 +302,7 @@ impl RuntimeState {
             .ok_or(RuntimeError::UnsolicitedAck(pkid))?;
         let next_packet = self.promote_collision(pkid);
         Ok(AckResult {
+            client_id: released.client_id,
             completion: Completion::PubAck {
                 token_id: released.token_id,
                 pkid,

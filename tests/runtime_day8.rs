@@ -6,7 +6,7 @@ use mqtt_client::runtime::{
 use mqtt_client::types::{Command, Packet, Publish, Qos};
 
 fn make_op(token_id: usize, packet: Packet) -> OutgoingOp {
-    OutgoingOp::new(token_id, Command::Ping, packet)
+    OutgoingOp::new(token_id, 1, Command::Ping, packet)
 }
 
 #[test]

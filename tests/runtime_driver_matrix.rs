@@ -58,6 +58,7 @@ fn connection_lost_event_triggers_reconnect_and_moves_to_pending() {
 
     let first = driver
         .handle_event(DriverEvent::Command(Command::Publish {
+            client_id: 1,
             token_id: 1,
             publish: qos1_publish(1),
         }))
@@ -69,6 +70,7 @@ fn connection_lost_event_triggers_reconnect_and_moves_to_pending() {
 
     let second = driver
         .handle_event(DriverEvent::Command(Command::Publish {
+            client_id: 1,
             token_id: 2,
             publish: qos1_publish(1),
         }))
@@ -89,6 +91,7 @@ fn connection_restored_replays_pending_with_dup_for_qos1() {
     driver.state.set_active(false);
     driver
         .handle_event(DriverEvent::Command(Command::Publish {
+            client_id: 1,
             token_id: 77,
             publish: qos1_publish(0),
         }))
@@ -126,6 +129,7 @@ fn incoming_pubrec_emits_pubrel() {
 
     let sent = driver
         .handle_event(DriverEvent::Command(Command::Publish {
+            client_id: 1,
             token_id: 4,
             publish: qos2_publish(0),
         }))
@@ -218,6 +222,7 @@ fn puback_completion_and_collision_promotion_are_both_emitted() {
 
     let first = driver
         .handle_event(DriverEvent::Command(Command::Publish {
+            client_id: 1,
             token_id: 10,
             publish: qos1_publish(1),
         }))
@@ -229,6 +234,7 @@ fn puback_completion_and_collision_promotion_are_both_emitted() {
 
     let second = driver
         .handle_event(DriverEvent::Command(Command::Publish {
+            client_id: 1,
             token_id: 11,
             publish: qos1_publish(1),
         }))
@@ -245,10 +251,13 @@ fn puback_completion_and_collision_promotion_are_both_emitted() {
     assert!(out.iter().any(|a| {
         matches!(
             a,
-            DriverAction::Complete(Completion::PubAck {
-                token_id: 10,
-                pkid: 1
-            })
+            DriverAction::CompleteFor {
+                client_id: 1,
+                completion: Completion::PubAck {
+                    token_id: 10,
+                    pkid: 1
+                }
+            }
         )
     }));
     assert!(out

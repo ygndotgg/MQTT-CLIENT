@@ -6,14 +6,20 @@ use crate::{
 };
 
 pub struct ClientHandle {
+    pub client_id: usize,
     pub command_tx: Sender<Command>,
     pub event_rx: Receiver<RuntimeEvent>,
     next_token_id: usize,
 }
 
 impl ClientHandle {
-    pub fn new(command_tx: Sender<Command>, event_rx: Receiver<RuntimeEvent>) -> Self {
+    pub fn new(
+        client_id: usize,
+        command_tx: Sender<Command>,
+        event_rx: Receiver<RuntimeEvent>,
+    ) -> Self {
         Self {
+            client_id,
             command_tx,
             event_rx,
             next_token_id: 1,
@@ -40,8 +46,11 @@ impl ClientHandle {
             pkid: 0,
             payload: payload.into(),
         };
-        self.command_tx
-            .send(Command::Publish { token_id, publish })?;
+        self.command_tx.send(Command::Publish {
+            client_id: self.client_id,
+            token_id,
+            publish,
+        })?;
         Ok(token_id)
     }
 
@@ -60,17 +69,22 @@ mod tests {
     fn publish_sends_command_and_returns_token() {
         let (command_tx, command_rx) = channel();
         let (_event_tx, event_rx) = channel();
-        let mut client = ClientHandle::new(command_tx, event_rx);
+        let mut client = ClientHandle::new(17, command_tx, event_rx);
         let token = client
             .publish("a/b", Qos::AtMostOnce, false, b"hello".to_vec())
             .unwrap();
         assert_eq!(token, 1);
         let cmd = command_rx.recv().unwrap();
         match cmd {
-            Command::Publish { token_id, publish } => {
+            Command::Publish {
+                token_id,
+                publish,
+                client_id,
+            } => {
                 assert_eq!(token_id, 1);
                 assert_eq!(publish.topic, "a/b");
                 assert_eq!(publish.qos, Qos::AtMostOnce);
+                assert_eq!(client_id, client.client_id);
                 assert_eq!(publish.payload, b"hello".to_vec());
                 assert_eq!(publish.pkid, 0);
                 assert!(!publish.dup)
@@ -83,7 +97,7 @@ mod tests {
     fn token_id_increments() {
         let (command_tx, _command_rx) = channel();
         let (_event_tx, event_rx) = channel();
-        let mut client = ClientHandle::new(command_tx, event_rx);
+        let mut client = ClientHandle::new(1, command_tx, event_rx);
 
         let first = client
             .publish("a", Qos::AtMostOnce, false, Vec::<u8>::new())
@@ -100,7 +114,7 @@ mod tests {
     fn recv_event_returns_runtime_event() {
         let (command_tx, _command_rx) = channel();
         let (event_tx, event_rx) = channel();
-        let client = ClientHandle::new(command_tx, event_rx);
+        let client = ClientHandle::new(1, command_tx, event_rx);
         event_tx.send(RuntimeEvent::Disconnected).unwrap();
         let event = client.recv_event().unwrap();
         assert_eq!(event, RuntimeEvent::Disconnected)

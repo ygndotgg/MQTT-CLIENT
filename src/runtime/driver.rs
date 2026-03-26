@@ -18,7 +18,7 @@ pub enum DriverEvent {
 pub enum DriverAction {
     Send(Packet),
     TriggerReconnect,
-    Complete(Completion),
+    CompleteFor { client_id: usize, completion: Completion },
 }
 
 #[derive(Debug)]
@@ -64,7 +64,10 @@ impl RuntimeDriver {
                     Packet::PingResp => self.state.on_pingresp(now),
                     Packet::PubAck(p) => {
                         let ack = self.state.on_puback_checked(p.pkid)?;
-                        out.push(DriverAction::Complete(ack.completion));
+                        out.push(DriverAction::CompleteFor {
+                            client_id: ack.client_id,
+                            completion: ack.completion,
+                        });
                         if let Some(next) = ack.next_packet {
                             self.state.note_outgoing_activity(now);
                             out.push(DriverAction::Send(next));
@@ -77,7 +80,10 @@ impl RuntimeDriver {
                     }
                     Packet::PubComp(p) => {
                         let ack = self.state.on_pubcomp_checked(p.pkid)?;
-                        out.push(DriverAction::Complete(ack.completion));
+                        out.push(DriverAction::CompleteFor {
+                            client_id: ack.client_id,
+                            completion: ack.completion,
+                        });
                         if let Some(next) = ack.next_packet {
                             self.state.note_outgoing_activity(now);
                             out.push(DriverAction::Send(next));

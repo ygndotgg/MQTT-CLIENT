@@ -19,6 +19,7 @@ fn outgoing_qos2_pubrec_then_pubcomp_completes() {
 
     let out = rt
         .on_command_publish(Command::Publish {
+            client_id: 1,
             token_id: 11,
             publish: qos2_publish(0),
         })
@@ -62,6 +63,7 @@ fn outgoing_qos2_unsolicited_pubcomp_is_error() {
 
     let out = rt
         .on_command_publish(Command::Publish {
+            client_id: 1,
             token_id: 22,
             publish: qos2_publish(1),
         })
@@ -113,6 +115,7 @@ fn outgoing_qos2_pubcomp_promotes_collision() {
 
     let first = rt
         .on_command_publish(Command::Publish {
+            client_id: 1,
             token_id: 1,
             publish: qos2_publish(1),
         })
@@ -121,6 +124,7 @@ fn outgoing_qos2_pubcomp_promotes_collision() {
 
     let second = rt
         .on_command_publish(Command::Publish {
+            client_id: 1,
             token_id: 2,
             publish: qos2_publish(1),
         })

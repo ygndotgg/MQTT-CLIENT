@@ -1,22 +1,25 @@
 use std::{
     collections::HashMap,
     io::Error,
-    sync::mpsc::{Receiver, Sender},
+    sync::{
+        Arc, Mutex,
+        mpsc::{Receiver, Sender},
+    },
     time::{Duration, Instant},
 };
 
 use crate::{
-    client::ClientHandle,
     codec::{FrameParser, encode_packet},
     runtime::{
         driver::{DriverAction, RuntimeDriver},
         events::RuntimeEvent,
-        state::{IncomingQos2Result, RuntimeError, RuntimeState},
+        state::{Completion, IncomingQos2Result, RuntimeError},
         transport::Transport,
     },
     types::{Command, Packet, Publish},
 };
 
+#[derive(Debug, Default)]
 pub struct ClientRegistry {
     next_id: usize,
     event_txs: HashMap<usize, Sender<RuntimeEvent>>,
@@ -61,9 +64,8 @@ pub enum RuntimeTaskError {
 
 pub struct RuntimeTask<T: Transport> {
     pub command_rx: Receiver<Command>,
-    pub event_tx: Sender<RuntimeEvent>,
+    pub registry: Arc<Mutex<ClientRegistry>>,
     pub driver: RuntimeDriver,
-    // pub outbox: Vec<Packet>,
     pub transport: T,
     parser: FrameParser,
     pub read_buf: [u8; 4096],
@@ -71,22 +73,17 @@ pub struct RuntimeTask<T: Transport> {
     pub last_tick: Instant,
 }
 
-// pub trait Transport {
-//     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
-//     fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()>;
-// }
-
 impl<T: Transport> RuntimeTask<T> {
     pub fn new(
         command_rx: Receiver<Command>,
-        event_tx: Sender<RuntimeEvent>,
+        registry: Arc<Mutex<ClientRegistry>>,
         driver: RuntimeDriver,
         transport: T,
         tick_interval: Duration,
     ) -> Self {
         Self {
             command_rx,
-            event_tx,
+            registry,
             driver,
             transport,
             parser: FrameParser::default(),
@@ -95,6 +92,27 @@ impl<T: Transport> RuntimeTask<T> {
             last_tick: Instant::now(),
         }
     }
+
+    fn send_event_to(&self, client_id: usize, event: RuntimeEvent) -> Result<(), RuntimeTaskError> {
+        self.registry
+            .lock()
+            .unwrap()
+            .send_to(client_id, event)
+            .map_err(|_| RuntimeTaskError::EventChannelClosed)
+    }
+
+    fn broadcast_event(&self, event: RuntimeEvent) {
+        self.registry.lock().unwrap().broadcast(event);
+    }
+
+    fn send_completion_to(
+        &self,
+        client_id: usize,
+        completion: Completion,
+    ) -> Result<(), RuntimeTaskError> {
+        self.send_event_to(client_id, RuntimeEvent::Completion(completion))
+    }
+
     fn read_one_packet(&mut self) -> Result<Option<Packet>, RuntimeTaskError> {
         let n = self
             .transport
@@ -132,15 +150,11 @@ impl<T: Transport> RuntimeTask<T> {
         self.driver.state.note_incoming_activity(now);
         match publish.qos {
             crate::types::Qos::AtMostOnce => {
-                self.event_tx
-                    .send(RuntimeEvent::IncomingPublish(publish))
-                    .map_err(|_| RuntimeTaskError::EventChannelClosed)?;
+                self.broadcast_event(RuntimeEvent::IncomingPublish(publish));
                 Ok(())
             }
             crate::types::Qos::AtLeastOnce => {
-                self.event_tx
-                    .send(RuntimeEvent::IncomingPublish(publish.clone()))
-                    .map_err(|_| RuntimeTaskError::EventChannelClosed)?;
+                self.broadcast_event(RuntimeEvent::IncomingPublish(publish.clone()));
                 let puback = Packet::PubAck(crate::types::PubAck { pkid: publish.pkid });
                 self.send_packet(puback)?;
                 Ok(())
@@ -154,9 +168,7 @@ impl<T: Transport> RuntimeTask<T> {
                 {
                     IncomingQos2Result::FirstSeen { pubrec } => {
                         self.send_packet(pubrec)?;
-                        self.event_tx
-                            .send(RuntimeEvent::IncomingPublish(publish))
-                            .map_err(|_| RuntimeTaskError::EventChannelClosed)?;
+                        self.broadcast_event(RuntimeEvent::IncomingPublish(publish));
                     }
                     IncomingQos2Result::Duplicate { pubrec } => {
                         self.send_packet(pubrec)?;
@@ -174,9 +186,8 @@ impl<T: Transport> RuntimeTask<T> {
             .handle_event(super::driver::DriverEvent::ConnectionRestored(now))
             .map_err(RuntimeTaskError::Runtime)?;
         self.handle_actions(actions)?;
-        self.event_tx
-            .send(RuntimeEvent::Reconnected)
-            .map_err(|_| RuntimeTaskError::EventChannelClosed)
+        self.broadcast_event(RuntimeEvent::Reconnected);
+        Ok(())
     }
 
     fn poll_incoming(&mut self) -> Result<(), RuntimeTaskError> {
@@ -231,15 +242,14 @@ impl<T: Transport> RuntimeTask<T> {
                 DriverAction::Send(packet) => {
                     self.send_packet(packet)?;
                 }
-                DriverAction::Complete(c) => {
-                    if let Err(_e) = self.event_tx.send(RuntimeEvent::Completion(c)) {
-                        return Err(RuntimeTaskError::EventChannelClosed);
-                    }
+                DriverAction::CompleteFor {
+                    client_id,
+                    completion,
+                } => {
+                    self.send_completion_to(client_id, completion)?;
                 }
                 DriverAction::TriggerReconnect => {
-                    if let Err(_e) = self.event_tx.send(RuntimeEvent::Disconnected) {
-                        return Err(RuntimeTaskError::EventChannelClosed);
-                    }
+                    self.broadcast_event(RuntimeEvent::Disconnected);
                     self.reconnect()?;
                 }
             }
@@ -272,41 +282,6 @@ impl<T: Transport> RuntimeTask<T> {
         self.driver.state.note_outgoing_activity(Instant::now());
         Ok(())
     }
-    // fn reconnect(&mut self) -> Result<(), RuntimeTaskError> {
-    //     // TODO: close/recreate transport and add backoff/retry.
-    //     let now = Instant::now();
-    //     let actions = self
-    //         .driver
-    //         .handle_event(super::driver::DriverEvent::ConnectionRestored(now))
-    //         .map_err(RuntimeTaskError::Runtime)?;
-    //     self.handle_actions(actions)?;
-    //     self.event_tx
-    //         .send(RuntimeEvent::Reconnected)
-    //         .map_err(|_| RuntimeTaskError::EventChannelClosed)?;
-    //     Ok(())
-    // }
-}
-
-pub fn start_runtime<T: Transport + Send + 'static>(
-    transport: T,
-    max_inflight: u16,
-    clean_session: bool,
-) -> ClientHandle {
-    let (command_tx, command_rx) = std::sync::mpsc::channel();
-    let (event_tx, event_rx) = std::sync::mpsc::channel();
-    let state = RuntimeState::new(max_inflight);
-    let driver = RuntimeDriver::new(state, clean_session);
-    let task = RuntimeTask::new(
-        command_rx,
-        event_tx,
-        driver,
-        transport,
-        Duration::from_millis(100),
-    );
-    std::thread::spawn(move || {
-        let _ = task.run();
-    });
-    ClientHandle::new(command_tx, event_rx)
 }
 
 #[cfg(test)]
@@ -315,11 +290,14 @@ mod tests {
     use crate::{
         codec::{decode_packet, encode_packet},
         runtime::events::RuntimeEvent,
-        runtime::state::Completion,
+        runtime::state::{Completion, RuntimeState},
         types::{Command, Packet, PubAck, Publish, Qos},
     };
     use std::{
-        sync::mpsc::channel,
+        sync::{
+            Arc, Mutex,
+            mpsc::channel,
+        },
         time::{Duration, Instant},
     };
 
@@ -349,28 +327,31 @@ mod tests {
 
     fn build_task() -> (
         RuntimeTask<FakeTransport>,
+        usize,
         std::sync::mpsc::Sender<Command>,
         std::sync::mpsc::Receiver<RuntimeEvent>,
     ) {
         let (command_tx, command_rx) = channel();
         let (event_tx, event_rx) = channel();
+        let registry = Arc::new(Mutex::new(ClientRegistry::default()));
+        let client_id = registry.lock().unwrap().register(event_tx);
         let mut state = RuntimeState::new(4);
         state.set_active(true);
         let driver = RuntimeDriver::new(state, false);
         let transport = FakeTransport::default();
         let task = RuntimeTask::new(
             command_rx,
-            event_tx,
+            registry,
             driver,
             transport,
             Duration::from_millis(1),
         );
-        (task, command_tx, event_rx)
+        (task, client_id, command_tx, event_rx)
     }
 
     #[test]
     fn command_publish_writes_encoded_publish() {
-        let (mut task, command_tx, _event_rx) = build_task();
+        let (mut task, client_id, command_tx, _event_rx) = build_task();
         let publish = Publish {
             dup: false,
             qos: Qos::AtLeastOnce,
@@ -382,6 +363,7 @@ mod tests {
 
         command_tx
             .send(Command::Publish {
+                client_id,
                 token_id: 1,
                 publish: publish.clone(),
             })
@@ -402,7 +384,7 @@ mod tests {
 
     #[test]
     fn incoming_puback_emits_completion() {
-        let (mut task, command_tx, event_rx) = build_task();
+        let (mut task, client_id, command_tx, event_rx) = build_task();
         let publish = Publish {
             dup: false,
             qos: Qos::AtLeastOnce,
@@ -414,6 +396,7 @@ mod tests {
 
         command_tx
             .send(Command::Publish {
+                client_id,
                 token_id: 7,
                 publish,
             })
@@ -440,7 +423,7 @@ mod tests {
 
     #[test]
     fn poll_tick_writes_pingreq_after_idle() {
-        let (mut task, _, _event_rx) = build_task();
+        let (mut task, _, _, _event_rx) = build_task();
         task.driver.state.set_active(true);
         task.driver.state.last_incoming = Instant::now() - Duration::from_secs(60);
         task.driver.state.last_outgoing = Instant::now() - Duration::from_secs(60);

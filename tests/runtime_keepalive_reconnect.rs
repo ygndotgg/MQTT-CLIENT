@@ -75,7 +75,9 @@ fn on_connection_lost_moves_outgoing_and_collision_to_pending() {
 
     let op1 = OutgoingOp::new(
         1,
+        1,
         Command::Publish {
+            client_id: 1,
             token_id: 1,
             publish: qos1_publish(1),
         },
@@ -85,7 +87,9 @@ fn on_connection_lost_moves_outgoing_and_collision_to_pending() {
 
     let op2 = OutgoingOp::new(
         2,
+        2,
         Command::Publish {
+            client_id: 2,
             token_id: 2,
             publish: qos1_publish(1),
         },
@@ -123,6 +127,7 @@ fn on_connection_restored_replays_pending_and_marks_dup_for_qos1() {
     rt.set_active(false);
 
     rt.on_command_publish(Command::Publish {
+        client_id: 1,
         token_id: 77,
         publish: qos1_publish(0),
     })
