@@ -2,7 +2,7 @@ use std::sync::mpsc::{Receiver, RecvError, Sender};
 
 use crate::{
     runtime::events::RuntimeEvent,
-    types::{Command, Publish, Qos},
+    types::{Command, Filter, Publish, Qos, Subscribe, Unsubscribe},
 };
 
 pub struct ClientHandle {
@@ -56,6 +56,44 @@ impl ClientHandle {
 
     pub fn recv_event(&self) -> Result<RuntimeEvent, RecvError> {
         self.event_rx.recv()
+    }
+
+    pub fn subscribe(
+        &mut self,
+        filter: impl Into<String>,
+        qos: Qos,
+    ) -> Result<usize, std::sync::mpsc::SendError<Command>> {
+        let token_id = self.next_token_id();
+        let subscribe = Subscribe {
+            pkid: 0,
+            filters: vec![Filter {
+                path: filter.into(),
+                qos,
+            }],
+        };
+        self.command_tx.send(Command::Subscribe {
+            client_id: self.client_id,
+            token_id,
+            subscribe,
+        })?;
+        Ok(token_id)
+    }
+
+    pub fn unsubscribe(
+        &mut self,
+        filter: impl Into<String>,
+    ) -> Result<usize, std::sync::mpsc::SendError<Command>> {
+        let token_id = self.next_token_id();
+        let unsubscribe = Unsubscribe {
+            pkid: 0,
+            filters: vec![filter.into()],
+        };
+        self.command_tx.send(Command::Unsubscribe {
+            client_id: self.client_id,
+            token_id,
+            unsubscribe,
+        })?;
+        Ok(token_id)
     }
 }
 
@@ -118,5 +156,55 @@ mod tests {
         event_tx.send(RuntimeEvent::Disconnected).unwrap();
         let event = client.recv_event().unwrap();
         assert_eq!(event, RuntimeEvent::Disconnected)
+    }
+
+    #[test]
+    fn subscribe_sends_command_and_returns_token() {
+        let (command_tx, command_rx) = channel();
+        let (_event_tx, event_rx) = channel();
+        let mut client = ClientHandle::new(5, command_tx, event_rx);
+
+        let token = client.subscribe("sensor/+", Qos::AtLeastOnce).unwrap();
+        assert_eq!(token, 1);
+
+        match command_rx.recv().unwrap() {
+            Command::Subscribe {
+                client_id,
+                token_id,
+                subscribe,
+            } => {
+                assert_eq!(client_id, 5);
+                assert_eq!(token_id, 1);
+                assert_eq!(subscribe.pkid, 0);
+                assert_eq!(subscribe.filters.len(), 1);
+                assert_eq!(subscribe.filters[0].path, "sensor/+");
+                assert_eq!(subscribe.filters[0].qos, Qos::AtLeastOnce);
+            }
+            _ => panic!("expected subscribe command"),
+        }
+    }
+
+    #[test]
+    fn unsubscribe_sends_command_and_returns_token() {
+        let (command_tx, command_rx) = channel();
+        let (_event_tx, event_rx) = channel();
+        let mut client = ClientHandle::new(5, command_tx, event_rx);
+
+        let token = client.unsubscribe("sensor/+").unwrap();
+        assert_eq!(token, 1);
+
+        match command_rx.recv().unwrap() {
+            Command::Unsubscribe {
+                client_id,
+                token_id,
+                unsubscribe,
+            } => {
+                assert_eq!(client_id, 5);
+                assert_eq!(token_id, 1);
+                assert_eq!(unsubscribe.pkid, 0);
+                assert_eq!(unsubscribe.filters, vec!["sensor/+"]);
+            }
+            _ => panic!("expected unsubscribe command"),
+        }
     }
 }

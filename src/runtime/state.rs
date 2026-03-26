@@ -15,6 +15,22 @@ use crate::{
 pub enum Completion {
     PubAck { token_id: usize, pkid: u16 },
     PubComp { token_id: usize, pkid: u16 },
+    SubAck { token_id: usize, pkid: u16 },
+    UnsubAck { token_id: usize, pkid: u16 },
+}
+
+pub struct SubscribeAckResult {
+    pub client_id: usize,
+    pub token_id: usize,
+    pub filters: Vec<crate::types::Filter>,
+    pub completion: Completion,
+}
+
+pub struct UnsubscribeAckResult {
+    pub client_id: usize,
+    pub token_id: usize,
+    pub filters: Vec<String>,
+    pub completion: Completion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +85,47 @@ impl RuntimeState {
             last_outgoing: Instant::now(),
             ping_retry_count: 0,
         }
+    }
+    pub fn on_suback_checked(&mut self, pkid: u16) -> Result<SubscribeAckResult, RuntimeError> {
+        let released = self
+            .inflight
+            .release_ack(pkid)
+            .ok_or(RuntimeError::UnsolicitedAck(pkid))?;
+        let (token_id, subscribe, client_id) = match released.command {
+            Command::Subscribe {
+                token_id,
+                subscribe,
+                client_id,
+            } => (token_id, subscribe, client_id),
+
+            _ => return Err(RuntimeError::InvalidCommand),
+        };
+        Ok(SubscribeAckResult {
+            client_id,
+            token_id,
+            filters: subscribe.filters,
+            completion: Completion::SubAck { token_id, pkid },
+        })
+    }
+    pub fn on_unsuback_checked(&mut self, pkid: u16) -> Result<UnsubscribeAckResult, RuntimeError> {
+        let released = self
+            .inflight
+            .release_ack(pkid)
+            .ok_or(RuntimeError::UnsolicitedAck(pkid))?;
+        let (token_id, unsubscribe, client_id) = match released.command {
+            Command::Unsubscribe {
+                token_id,
+                unsubscribe,
+                client_id,
+            } => (token_id, unsubscribe, client_id),
+            _ => return Err(RuntimeError::InvalidCommand),
+        };
+        Ok(UnsubscribeAckResult {
+            client_id,
+            token_id,
+            filters: unsubscribe.filters,
+            completion: Completion::UnsubAck { token_id, pkid },
+        })
     }
     pub fn on_tick(&mut self, now: Instant) -> Result<Option<Packet>, RuntimeError> {
         if !self.active {
@@ -193,6 +250,100 @@ impl RuntimeState {
     pub fn clean_for_reconnect(&mut self, clean_session: bool) {
         self.on_connection_lost(clean_session);
     }
+
+    pub fn on_command_subscribe(&mut self, cmd: Command) -> Result<Option<Packet>, RuntimeError> {
+        let (token_id, mut subscribe, client_id) = match cmd {
+            Command::Subscribe {
+                token_id,
+                subscribe,
+                client_id,
+            } => (token_id, subscribe, client_id),
+            _ => return Err(RuntimeError::InvalidCommand),
+        };
+        if subscribe.pkid == 0 {
+            subscribe.pkid = self.pkid_pool.next_candidate();
+        }
+        let wire = Packet::Subscribe(subscribe.clone());
+        let op = OutgoingOp::new(
+            token_id,
+            client_id,
+            Command::Subscribe {
+                token_id,
+                subscribe: subscribe.clone(),
+                client_id,
+            },
+            wire.clone(),
+        );
+        if !self.active {
+            self.inflight.pending.push(op);
+            return Ok(None);
+        }
+        let inserted = self.inflight.try_insert(subscribe.pkid, op);
+        if !inserted {
+            if self.inflight.collision.is_none() {
+                self.inflight.pending.push(OutgoingOp {
+                    token_id,
+                    command: Command::Subscribe {
+                        token_id,
+                        subscribe,
+                        client_id,
+                    },
+                    packet: wire,
+                    client_id,
+                });
+            }
+            return Ok(None);
+        }
+        Ok(Some(wire))
+    }
+    pub fn on_command_unsubscribe(
+        &mut self,
+        cmd: Command,
+    ) -> Result<Option<Packet>, RuntimeError> {
+        let (token_id, mut unsubscribe, client_id) = match cmd {
+            Command::Unsubscribe {
+                token_id,
+                unsubscribe,
+                client_id,
+            } => (token_id, unsubscribe, client_id),
+            _ => return Err(RuntimeError::InvalidCommand),
+        };
+        if unsubscribe.pkid == 0 {
+            unsubscribe.pkid = self.pkid_pool.next_candidate();
+        }
+        let wire = Packet::UnSubscribe(unsubscribe.clone());
+        let op = OutgoingOp::new(
+            token_id,
+            client_id,
+            Command::Unsubscribe {
+                token_id,
+                unsubscribe: unsubscribe.clone(),
+                client_id,
+            },
+            wire.clone(),
+        );
+        if !self.active {
+            self.inflight.pending.push(op);
+            return Ok(None);
+        }
+        let inserted = self.inflight.try_insert(unsubscribe.pkid, op);
+        if !inserted {
+            if self.inflight.collision.is_none() {
+                self.inflight.pending.push(OutgoingOp::new(
+                    token_id,
+                    client_id,
+                    Command::Unsubscribe {
+                        token_id,
+                        unsubscribe,
+                        client_id,
+                    },
+                    wire,
+                ));
+            }
+            return Ok(None);
+        }
+        Ok(Some(wire))
+    }
     pub fn on_command_publish(&mut self, command: Command) -> Result<Option<Packet>, RuntimeError> {
         let (client_id, token_id, mut publish) = match command {
             Command::Publish {
@@ -249,47 +400,121 @@ impl RuntimeState {
         let pending = self.inflight.pending.drain(..).collect::<Vec<_>>();
         let mut out = Vec::new();
         for op in pending {
-            if let Command::Publish {
-                client_id,
-                token_id,
-                mut publish,
-            } = op.command
-            {
-                if publish.qos != Qos::AtMostOnce {
-                    if publish.pkid == 0 {
-                        publish.pkid = self.pkid_pool.next_candidate();
-                    }
-                    publish.dup = true;
-                }
-                let wire = Packet::Publish(publish.clone());
-                let reinjected = OutgoingOp::new(
-                    token_id,
+            match op.command {
+                Command::Publish {
                     client_id,
-                    Command::Publish {
-                        client_id,
+                    token_id,
+                    mut publish,
+                } => {
+                    if publish.qos != Qos::AtMostOnce {
+                        if publish.pkid == 0 {
+                            publish.pkid = self.pkid_pool.next_candidate();
+                        }
+                        publish.dup = true;
+                    }
+                    let wire = Packet::Publish(publish.clone());
+                    let reinjected = OutgoingOp::new(
                         token_id,
-                        publish: publish.clone(),
-                    },
-                    wire.clone(),
-                );
-                if publish.qos != Qos::AtMostOnce {
-                    if !self.inflight.try_insert(publish.pkid, reinjected) {
+                        client_id,
+                        Command::Publish {
+                            client_id,
+                            token_id,
+                            publish: publish.clone(),
+                        },
+                        wire.clone(),
+                    );
+                    if publish.qos != Qos::AtMostOnce {
+                        if !self.inflight.try_insert(publish.pkid, reinjected) {
+                            if self.inflight.collision.is_none() {
+                                self.inflight.pending.push(OutgoingOp::new(
+                                    token_id,
+                                    client_id,
+                                    Command::Publish {
+                                        client_id,
+                                        token_id,
+                                        publish,
+                                    },
+                                    wire,
+                                ));
+                            }
+                            continue;
+                        }
+                    }
+                    out.push(wire);
+                }
+                Command::Subscribe {
+                    client_id,
+                    token_id,
+                    mut subscribe,
+                } => {
+                    if subscribe.pkid == 0 {
+                        subscribe.pkid = self.pkid_pool.next_candidate();
+                    }
+                    let wire = Packet::Subscribe(subscribe.clone());
+                    let reinjected = OutgoingOp::new(
+                        token_id,
+                        client_id,
+                        Command::Subscribe {
+                            client_id,
+                            token_id,
+                            subscribe: subscribe.clone(),
+                        },
+                        wire.clone(),
+                    );
+                    if !self.inflight.try_insert(subscribe.pkid, reinjected) {
                         if self.inflight.collision.is_none() {
                             self.inflight.pending.push(OutgoingOp::new(
                                 token_id,
                                 client_id,
-                                Command::Publish {
+                                Command::Subscribe {
                                     client_id,
                                     token_id,
-                                    publish,
+                                    subscribe,
                                 },
                                 wire,
                             ));
                         }
                         continue;
                     }
+                    out.push(wire);
                 }
-                out.push(wire);
+                Command::Unsubscribe {
+                    client_id,
+                    token_id,
+                    mut unsubscribe,
+                } => {
+                    if unsubscribe.pkid == 0 {
+                        unsubscribe.pkid = self.pkid_pool.next_candidate();
+                    }
+                    let wire = Packet::UnSubscribe(unsubscribe.clone());
+                    let reinjected = OutgoingOp::new(
+                        token_id,
+                        client_id,
+                        Command::Unsubscribe {
+                            client_id,
+                            token_id,
+                            unsubscribe: unsubscribe.clone(),
+                        },
+                        wire.clone(),
+                    );
+                    if !self.inflight.try_insert(unsubscribe.pkid, reinjected) {
+                        if self.inflight.collision.is_none() {
+                            self.inflight.pending.push(OutgoingOp::new(
+                                token_id,
+                                client_id,
+                                Command::Unsubscribe {
+                                    client_id,
+                                    token_id,
+                                    unsubscribe,
+                                },
+                                wire,
+                            ));
+                        }
+                        continue;
+                    }
+                    out.push(wire);
+                }
+                Command::Ping | Command::Disconnect => {}
             }
         }
         out

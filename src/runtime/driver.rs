@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use crate::{
     runtime::state::{Completion, IncomingQos2Result, RuntimeError, RuntimeState},
-    types::{Command, Packet, Qos},
+    types::{Command, Filter, Packet, Qos},
 };
 
 #[derive(Debug, Clone)]
@@ -18,7 +18,20 @@ pub enum DriverEvent {
 pub enum DriverAction {
     Send(Packet),
     TriggerReconnect,
-    CompleteFor { client_id: usize, completion: Completion },
+    CompleteFor {
+        client_id: usize,
+        completion: Completion,
+    },
+    SubscribeAckFor {
+        client_id: usize,
+        filters: Vec<Filter>,
+        completion: Completion,
+    },
+    UnsubscribeAckFor {
+        client_id: usize,
+        filters: Vec<String>,
+        completion: Completion,
+    },
 }
 
 #[derive(Debug)]
@@ -52,12 +65,51 @@ impl RuntimeDriver {
                     Err(e) => return Err(e),
                 };
             }
-            DriverEvent::Command(c) => {
-                if let Some(pkt) = self.state.on_command_publish(c)? {
-                    self.state.note_outgoing_activity(Instant::now());
-                    out.push(DriverAction::Send(pkt));
+            DriverEvent::Command(c) => match c {
+                Command::Publish {
+                    token_id,
+                    publish,
+                    client_id,
+                } => {
+                    if let Some(pkt) = self.state.on_command_publish(Command::Publish {
+                        token_id,
+                        publish,
+                        client_id,
+                    })? {
+                        self.state.note_outgoing_activity(Instant::now());
+                        out.push(DriverAction::Send(pkt));
+                    }
                 }
-            }
+                Command::Subscribe {
+                    token_id,
+                    subscribe,
+                    client_id,
+                } => {
+                    if let Some(pkt) = self.state.on_command_subscribe(Command::Subscribe {
+                        token_id,
+                        subscribe,
+                        client_id,
+                    })? {
+                        self.state.note_outgoing_activity(Instant::now());
+                        out.push(DriverAction::Send(pkt));
+                    }
+                }
+                Command::Unsubscribe {
+                    token_id,
+                    unsubscribe,
+                    client_id,
+                } => {
+                    if let Some(pkt) = self.state.on_command_unsubscribe(Command::Unsubscribe {
+                        token_id,
+                        unsubscribe,
+                        client_id,
+                    })? {
+                        self.state.note_outgoing_activity(Instant::now());
+                        out.push(DriverAction::Send(pkt));
+                    }
+                }
+                _ => {}
+            },
             DriverEvent::Incoming(packet, now) => {
                 self.state.note_incoming_activity(now);
                 match packet {
@@ -108,6 +160,22 @@ impl RuntimeDriver {
                         let comp = self.state.on_incoming_pubrel_checked(p.pkid)?;
                         self.state.note_outgoing_activity(now);
                         out.push(DriverAction::Send(comp));
+                    }
+                    Packet::SubAck(p) => {
+                        let ack = self.state.on_suback_checked(p.pkid)?;
+                        out.push(DriverAction::SubscribeAckFor {
+                            client_id: ack.client_id,
+                            filters: ack.filters,
+                            completion: ack.completion,
+                        });
+                    }
+                    Packet::UnsubAck(p) => {
+                        let ack = self.state.on_unsuback_checked(p.pkid)?;
+                        out.push(DriverAction::UnsubscribeAckFor {
+                            client_id: ack.client_id,
+                            filters: ack.filters,
+                            completion: ack.completion,
+                        });
                     }
                     _ => {}
                 }

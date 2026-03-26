@@ -182,7 +182,6 @@ impl<T: Transport> RuntimeTask<T> {
                     }
                     IncomingQos2Result::Duplicate { pubrec } => {
                         self.send_packet(pubrec)?;
-
                     }
                 }
                 Ok(())
@@ -263,6 +262,27 @@ impl<T: Transport> RuntimeTask<T> {
                     self.broadcast_event(RuntimeEvent::Disconnected);
                     self.reconnect()?;
                 }
+
+                DriverAction::SubscribeAckFor {
+                    client_id,
+                    filters,
+                    completion,
+                } => {
+                    for filter in filters {
+                        self.router.add_subscription(client_id, filter.path);
+                    }
+                    self.send_completion_to(client_id, completion)?;
+                }
+                DriverAction::UnsubscribeAckFor {
+                    client_id,
+                    filters,
+                    completion,
+                } => {
+                    for filter in filters {
+                        self.router.remove_subscription(client_id, &filter);
+                    }
+                    self.send_completion_to(client_id, completion)?;
+                }
             }
         }
         Ok(())
@@ -302,7 +322,7 @@ mod tests {
         codec::{decode_packet, encode_packet},
         runtime::events::RuntimeEvent,
         runtime::state::{Completion, RuntimeState},
-        types::{Command, Packet, PubAck, Publish, Qos},
+        types::{Command, Packet, PubAck, Publish, Qos, SubAck, Subscribe, UnsubAck, Unsubscribe, Filter},
     };
     use std::{
         sync::{Arc, Mutex, mpsc::channel},
@@ -486,7 +506,8 @@ mod tests {
     #[test]
     fn incoming_qos2_duplicate_is_not_fanned_out_twice() {
         let (mut task, client_id, _command_tx, event_rx) = build_task();
-        task.router.add_subscription(client_id, "sensor/+".to_string());
+        task.router
+            .add_subscription(client_id, "sensor/+".to_string());
 
         let publish = Publish {
             dup: false,
@@ -504,7 +525,93 @@ mod tests {
             RuntimeEvent::IncomingPublish(publish.clone())
         );
 
-        task.handle_incoming_publish(publish, Instant::now()).unwrap();
+        task.handle_incoming_publish(publish, Instant::now())
+            .unwrap();
         assert!(event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn subscribe_ack_adds_route_and_unsuback_removes_it() {
+        let (mut task, client_id, command_tx, event_rx) = build_task();
+
+        command_tx
+            .send(Command::Subscribe {
+                client_id,
+                token_id: 11,
+                subscribe: Subscribe {
+                    pkid: 0,
+                    filters: vec![Filter {
+                        path: "sensor/+".into(),
+                        qos: Qos::AtMostOnce,
+                    }],
+                },
+            })
+            .unwrap();
+
+        task.poll_command().unwrap();
+        let subscribe_wire = task.transport.writes.pop().unwrap();
+        let subscribe_pkid = match decode_packet(&subscribe_wire).unwrap() {
+            Packet::Subscribe(s) => s.pkid,
+            _ => panic!("expected subscribe"),
+        };
+
+        let mut suback_bytes = Vec::new();
+        encode_packet(
+            &Packet::SubAck(SubAck {
+                pkid: subscribe_pkid,
+                return_codes: vec![0x00],
+            }),
+            &mut suback_bytes,
+        )
+        .unwrap();
+        task.transport.reads.push(suback_bytes);
+        task.poll_incoming().unwrap();
+
+        assert_eq!(
+            event_rx.recv().unwrap(),
+            RuntimeEvent::Completion(Completion::SubAck {
+                token_id: 11,
+                pkid: subscribe_pkid
+            })
+        );
+        assert_eq!(task.router.matching_clients("sensor/temp"), vec![client_id]);
+
+        command_tx
+            .send(Command::Unsubscribe {
+                client_id,
+                token_id: 12,
+                unsubscribe: Unsubscribe {
+                    pkid: 0,
+                    filters: vec!["sensor/+".into()],
+                },
+            })
+            .unwrap();
+
+        task.poll_command().unwrap();
+        let unsubscribe_wire = task.transport.writes.pop().unwrap();
+        let unsubscribe_pkid = match decode_packet(&unsubscribe_wire).unwrap() {
+            Packet::UnSubscribe(s) => s.pkid,
+            _ => panic!("expected unsubscribe"),
+        };
+
+        let mut unsuback_bytes = Vec::new();
+        encode_packet(
+            &Packet::UnsubAck(UnsubAck {
+                pkid: unsubscribe_pkid,
+            }),
+            &mut unsuback_bytes,
+        )
+        .unwrap();
+        task.transport.reads.push(unsuback_bytes);
+        task.poll_incoming().unwrap();
+
+        assert_eq!(
+            event_rx.recv().unwrap(),
+            RuntimeEvent::Completion(Completion::UnsubAck {
+                token_id: 12,
+                pkid: unsubscribe_pkid
+            })
+        );
+        assert!(task.router.matching_clients("sensor/temp").is_empty());
     }
 }
