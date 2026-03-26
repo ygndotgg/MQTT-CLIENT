@@ -5,14 +5,16 @@ pub struct OutgoingOp {
     pub token_id: usize,
     pub command: Command,
     pub packet: Packet,
+    pub client_id: usize,
 }
 
 impl OutgoingOp {
-    pub fn new(token_id: usize, command: Command, packet: Packet) -> Self {
+    pub fn new(token_id: usize, client_id: usize, command: Command, packet: Packet) -> Self {
         Self {
             token_id,
             command,
             packet,
+            client_id,
         }
     }
 }

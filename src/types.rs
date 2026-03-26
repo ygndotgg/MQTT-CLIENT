@@ -121,14 +121,17 @@ pub enum Command {
     Publish {
         token_id: usize,
         publish: Publish,
+        client_id: usize,
     },
     Subscribe {
         token_id: usize,
         subscribe: Subscribe,
+        client_id: usize,
     },
     Unsubscribe {
         token_id: usize,
         unsubscribe: Unsubscribe,
+        client_id: usize,
     },
     Ping,
     Disconnect,

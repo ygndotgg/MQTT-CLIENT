@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::Error,
     sync::mpsc::{Receiver, Sender},
     time::{Duration, Instant},
@@ -15,6 +16,39 @@ use crate::{
     },
     types::{Command, Packet, Publish},
 };
+
+pub struct ClientRegistry {
+    next_id: usize,
+    event_txs: HashMap<usize, Sender<RuntimeEvent>>,
+}
+
+impl ClientRegistry {
+    pub fn register(&mut self, event_tx: Sender<RuntimeEvent>) -> usize {
+        self.next_id += 1;
+        let client_id = self.next_id;
+        self.event_txs.insert(client_id, event_tx);
+        client_id
+    }
+
+    pub fn remove(&mut self, client_id: usize) -> Option<Sender<RuntimeEvent>> {
+        self.event_txs.remove(&client_id)
+    }
+    pub fn send_to(
+        &self,
+        client_id: usize,
+        event: RuntimeEvent,
+    ) -> Result<(), std::sync::mpsc::SendError<RuntimeEvent>> {
+        match self.event_txs.get(&client_id) {
+            Some(tx) => tx.send(event),
+            None => Ok(()),
+        }
+    }
+    pub fn broadcast(&self, event: RuntimeEvent) {
+        for tx in self.event_txs.values() {
+            let _ = tx.send(event.clone());
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum RuntimeTaskError {
@@ -282,7 +316,7 @@ mod tests {
         codec::{decode_packet, encode_packet},
         runtime::events::RuntimeEvent,
         runtime::state::Completion,
-        types::{Command, Packet, Publish, PubAck, Qos},
+        types::{Command, Packet, PubAck, Publish, Qos},
     };
     use std::{
         sync::mpsc::channel,
@@ -313,14 +347,24 @@ mod tests {
         }
     }
 
-    fn build_task() -> (RuntimeTask<FakeTransport>, std::sync::mpsc::Sender<Command>, std::sync::mpsc::Receiver<RuntimeEvent>) {
+    fn build_task() -> (
+        RuntimeTask<FakeTransport>,
+        std::sync::mpsc::Sender<Command>,
+        std::sync::mpsc::Receiver<RuntimeEvent>,
+    ) {
         let (command_tx, command_rx) = channel();
         let (event_tx, event_rx) = channel();
         let mut state = RuntimeState::new(4);
         state.set_active(true);
         let driver = RuntimeDriver::new(state, false);
         let transport = FakeTransport::default();
-        let task = RuntimeTask::new(command_rx, event_tx, driver, transport, Duration::from_millis(1));
+        let task = RuntimeTask::new(
+            command_rx,
+            event_tx,
+            driver,
+            transport,
+            Duration::from_millis(1),
+        );
         (task, command_tx, event_rx)
     }
 
